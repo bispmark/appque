@@ -20,6 +20,9 @@ GET  /pdf/{job_id}
 GET  /health
     Server status check.
 
+GET  /fields
+    Lists all PDF form field names — use to verify mappings.
+
 Run
 ---
     uvicorn render_engine:app --host 0.0.0.0 --port 8504
@@ -53,12 +56,10 @@ PDF_STORE.mkdir(parents=True, exist_ok=True)
 app      = FastAPI(title="TWI PDF Rendering Engine")
 security = HTTPBasic()
 
-# Credentials — override via QUEUE_USER and QUEUE_PASS env vars on Render
 QUEUE_USER = os.environ.get("QUEUE_USER", "blastline").encode()
 QUEUE_PASS = os.environ.get("QUEUE_PASS", "TWI@2026").encode()
 
 def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
-    """HTTP Basic Auth — protects queue and PDF download endpoints."""
     user_ok = secrets.compare_digest(credentials.username.encode(), QUEUE_USER)
     pass_ok = secrets.compare_digest(credentials.password.encode(), QUEUE_PASS)
     if not (user_ok and pass_ok):
@@ -77,13 +78,11 @@ app.add_middleware(
 # FIELD METADATA
 # ══════════════════════════════════════════════════════════════════════════════
 
-EXAM_TYPE_MAP = {
-    "Initial":"/1", "Supplementary":"/2", "Renewal":"/3",
-    "Bridging":"/4", "Retest":"/5",
-}
-EXAM_BODY_MAP = {
-    "CSWIP":"/6", "PCN":"/7", "AWS":"/8", "BGAS":"/9", "ASNT":"/10",
-}
+# NOTE: Exam type (Initial/Supplementary/Renewal/Bridging/Retest) and
+# Exam body (CSWIP/PCN/AWS/BGAS/ASNT) checkboxes are VISUAL ONLY in this
+# PDF — they are not form fields and cannot be filled programmatically.
+# Check Box23, Check Box28, Check Box1.0 do NOT exist in this PDF.
+
 HEARD_FIELDS = {
     "LinkedIn":              ("Check Box9",  "/1"),
     "Facebook":              ("Check Box10", "/2"),
@@ -97,7 +96,15 @@ HEARD_FIELDS = {
     "Google search":         ("Check Box19", "/Yes"),
     "Other":                 ("Check Box20", "/Yes"),
 }
-COMB_FIELDS   = {"undefined": 6, "D": 2, "M": 2, "Y": 4}
+
+# Comb fields: name → max character count (must match /MaxLen in PDF)
+COMB_FIELDS = {
+    "undefined": 6,   # TWI Candidate ID
+    "D":         2,   # DOB day
+    "M":         2,   # DOB month
+    "Y":         4,   # DOB year
+}
+
 SPECIAL_TOKENS = {
     "__dob__", "__exam_type__", "__exam_body__", "__sponsor_type__",
     "__disability__", "__gdpr__", "__heard__", "__ignore__",
@@ -126,7 +133,6 @@ AUTO_MAP_RULES = [
     (r"sponsoring.*address.*3|sponsoring.*3",            "Sponsoring Company and Address 3"),
     (r"sponsoring.*pincode",                             "Postcode_2"),
     (r"where.*heard|heard.*twi",                         "__heard__"),
-    (r"venue",                                           "__venue__"),
     (r"contact.?no|mobile|private.?tel",                 "Private Tel"),
     (r"emergency.?contact",                              "Tel"),
     (r"^email$|candidate.?email",                        "Email"),
@@ -205,7 +211,8 @@ def _split_dob(s: str):
     """
     Split a date string into (DD, MM, YYYY).
     Handles Zoho CRM date formats:
-      - YYYY-MM-DD  (API standard)
+      - YYYY-MM-DD                  (API standard)
+      - YYYY-MM-DDTHH:MM:SS+05:30  (Zoho ISO datetime — strips time part)
       - DD/MM/YYYY
       - MM/DD/YYYY
       - DD-MM-YYYY
@@ -213,7 +220,10 @@ def _split_dob(s: str):
       - Mon DD, YYYY e.g. Nov 15, 1988
     """
     s = str(s).strip()
-    # Try standard formats first
+
+    # Strip ISO datetime suffix: "2026-03-05T18:30:00+05:30" → "2026-03-05"
+    s = re.sub(r"T\d{2}:\d{2}.*$", "", s).strip()
+
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y",
                 "%d-%b-%Y", "%b %d, %Y", "%B %d, %Y",
                 "%d %b %Y", "%d %B %Y"):
@@ -222,11 +232,13 @@ def _split_dob(s: str):
             return str(d.day).zfill(2), str(d.month).zfill(2), str(d.year)
         except ValueError:
             continue
-    # Fallback: extract digits
+
+    # Fallback: extract digits only
     digits = re.sub(r"\D", "", s)
     if len(digits) == 8:
-        # Assume YYYYMMDD (Zoho API format stripped of dashes)
+        # Assume YYYYMMDD (Zoho API date stripped of dashes)
         return digits[6:8], digits[4:6], digits[0:4]
+
     return "", "", ""
 
 def apply_mappings(raw: dict) -> dict:
@@ -234,7 +246,6 @@ def apply_mappings(raw: dict) -> dict:
     pdf_text   = {k for k,v in pdf_fields.items() if v["type"] == "/Tx"}
     manual     = load_manual_mappings()
 
-    # Auto-map all incoming keys
     auto = {}
     for zk in raw:
         matched = None
@@ -251,7 +262,6 @@ def apply_mappings(raw: dict) -> dict:
                     break
         auto[zk] = matched or "__ignore__"
 
-    # Manual overrides take priority
     effective = {**auto, **{k: v for k, v in manual.items() if k in raw}}
 
     out = {}
@@ -261,6 +271,7 @@ def apply_mappings(raw: dict) -> dict:
             continue
         if target == "__dob__":
             dd, dm, dy = _split_dob(str(v))
+            print(f"[DOB] raw='{v}' → D='{dd}' M='{dm}' Y='{dy}'")
             out["D"] = dd; out["M"] = dm; out["Y"] = dy
         elif target in SPECIAL_TOKENS:
             out[target] = str(v) if v is not None else ""
@@ -287,15 +298,20 @@ def build_field_values(mapped: dict) -> dict:
         fid, val = HEARD_FIELDS[heard]; hb[fid] = val
 
     fv.update({
-        "Check Box2":   "/1" if _p("__disability__").lower() == "yes" else "/2",
-        "Check Box23":  EXAM_TYPE_MAP.get(_p("__exam_type__"), "/Off"),
-        "Check Box28":  EXAM_BODY_MAP.get(_p("__exam_body__"), "/Off"),
-        "Check Box1.0": "/1" if "self" in _p("__sponsor_type__").lower() else "/2",
-        "Check Box21":  "/Yes" if _p("__gdpr__").lower() in ("yes","true","1") else "/Off",
+        # Disability: Check Box2a is the "Yes" tick box (states: /Off, /Yes)
+        "Check Box2a": "/Yes" if _p("__disability__").lower() == "yes" else "/Off",
+        # GDPR consent tick box
+        "Check Box21": "/Yes" if _p("__gdpr__").lower() in ("yes","true","1") else "/Off",
         **hb,
     })
+
+    # NOTE: Exam type and exam body checkboxes (Initial/Supplementary/CSWIP/PCN etc.)
+    # are NOT form fields in this PDF version — they are printed visual elements only.
+    # If those checkboxes become fillable in a future PDF revision, map them here.
+
     if not fv.get("Date"):
         fv["Date"] = date.today().strftime("%d/%m/%Y")
+
     return fv
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -303,21 +319,39 @@ def build_field_values(mapped: dict) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_comb_ap(value: str, max_len: int, rect: tuple, fs: float = 8.0) -> bytes:
+    """
+    Build a custom appearance stream for a comb (segmented) text field.
+    Centers each character within its cell using Courier font.
+
+    IMPORTANT: /Tf must be INSIDE the BT/ET block — placing it outside
+    causes corrupt font selection in some PDF renderers.
+    """
     x1, y1, x2, y2 = rect
-    cell_w = (x2 - x1) / max_len
-    base   = (y2 - y1 - fs) / 2.0 + 1.0
-    lines  = ["q", f"/Cour {fs} Tf", "0 0 0 rg", "BT"]
-    val    = str(value).ljust(max_len)[:max_len]
+    w      = x2 - x1
+    h      = y2 - y1
+    cell_w = w / max_len
+    base   = (h - fs) / 2.0 + 1.0
+
+    # q — save graphics state
+    # BT — begin text block (Tf MUST come after BT, not before)
+    lines = ["q", "BT", f"/Cour {fs} Tf", "0 0 0 rg"]
+
+    val = str(value).ljust(max_len)[:max_len]
     for i, ch in enumerate(val):
-        if not ch.strip(): continue
-        cx = i * cell_w + (cell_w - fs * 0.6) / 2.0
+        if not ch.strip():
+            continue
+        cx   = i * cell_w + (cell_w - fs * 0.6) / 2.0
+        safe = ch.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
         lines.append(f"1 0 0 1 {cx:.2f} {base:.2f} Tm")
-        safe = ch.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
         lines.append(f"({safe}) Tj")
+
     lines += ["ET", "Q"]
     return "\n".join(lines).encode()
 
 def _build_multiline_ap(value: str, rect: tuple) -> bytes:
+    """
+    Build an appearance stream for a multiline text field with auto-scaling font.
+    """
     x1, y1, x2, y2 = rect
     w, h = x2 - x1, y2 - y1
     PAD = 2.0; LG = 1.3; MAX_FS = 8.0; MIN_FS = 5.0; CPP = 0.52
@@ -332,7 +366,8 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     fs = MAX_FS
     while fs >= MIN_FS:
         lines = wrap(value, fs)
-        if len(lines) * fs * LG + PAD * 2 <= h: break
+        if len(lines) * fs * LG + PAD * 2 <= h:
+            break
         fs -= 0.5
     fs    = max(fs, MIN_FS)
     lines = wrap(value, fs)
@@ -341,64 +376,19 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     parts = ["q", "BT", f"/Helv {fs:.1f} Tf", "0 0 0 rg"]
     for i, line in enumerate(lines):
         yp = sy - i * lh
-        if yp < PAD: break
+        if yp < PAD:
+            break
         safe = line.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
         parts.append(f"{PAD:.1f} {yp:.2f} Td" if i == 0 else f"0 {-lh:.2f} Td")
         parts.append(f"({safe}) Tj")
     parts += ["ET", "Q"]
     return "\n".join(parts).encode()
 
-def flatten_pdf(pdf_bytes: bytes) -> bytes:
-    """
-    Flatten a filled PDF — converts all form fields to static content.
-    Result is non-editable and renders correctly in all viewers.
-    Uses pypdf to set the NeedAppearances flag and flatten annotations.
-    """
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    writer = PdfWriter()
-    writer.append(reader)
-
-    # Set NeedAppearances to false — forces viewers to use existing AP streams
-    if writer._root_object.get("/AcroForm"):
-        writer._root_object["/AcroForm"].update({
-            NameObject("/NeedAppearances"): False,
-        })
-
-    # Flatten each annotation — move appearance stream content to page
-    # and remove the widget annotation so fields are no longer interactive
-    for page in writer.pages:
-        if "/Annots" not in page:
-            continue
-        annots_to_keep = []
-        for ref in page["/Annots"]:
-            try:
-                annot = ref.get_object()
-            except Exception:
-                continue
-            if annot is None or not hasattr(annot, "get"):
-                continue
-            # Keep non-widget annotations (links, comments etc)
-            if annot.get("/Subtype") != "/Widget":
-                annots_to_keep.append(ref)
-                continue
-            # For widget annotations — just drop them (field becomes static
-            # because the appearance stream was already rendered into the page
-            # content by update_page_form_field_values + our custom AP streams)
-
-        if annots_to_keep:
-            page[NameObject("/Annots")] = annots_to_keep
-        elif "/Annots" in page:
-            del page["/Annots"]
-
-    out = io.BytesIO()
-    writer.write(out)
-    return out.getvalue()
-
-
 def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
     reader = PdfReader(io.BytesIO(template_bytes))
     writer = PdfWriter()
     writer.append(reader)
+
     for page in writer.pages:
         writer.update_page_form_field_values(page, fv, auto_regenerate=False)
 
@@ -408,19 +398,25 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
                 annot = ref.get_object()
             except Exception:
                 continue
-            if annot is None or not hasattr(annot, "get"): continue
-            if annot.get("/Subtype") != "/Widget": continue
+            if annot is None or not hasattr(annot, "get"):
+                continue
+            if annot.get("/Subtype") != "/Widget":
+                continue
             fname = str(annot.get("/T", ""))
             value = fv.get(fname, "")
             rect  = tuple(float(v) for v in annot.get("/Rect", [0,0,0,0]))
             ap_bytes = None
+
             if fname in COMB_FIELDS:
                 if value:
                     ap_bytes = _build_comb_ap(value, COMB_FIELDS[fname], rect)
             elif annot.get("/Ff") and bool(int(annot["/Ff"]) & (1 << 12)):
                 if value:
                     ap_bytes = _build_multiline_ap(value, rect)
-            if ap_bytes is None: continue
+
+            if ap_bytes is None:
+                continue
+
             stream = DecodedStreamObject()
             stream.set_data(ap_bytes)
             stream.update({
@@ -453,7 +449,6 @@ def save_jobs(jobs: list):
 def log_job(job: dict):
     jobs = load_jobs()
     jobs.insert(0, job)
-    # Keep last 500 jobs only
     save_jobs(jobs[:500])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -469,20 +464,19 @@ async def generate(request: Request):
     {
         "record_data": {
             "Candidate Name as per ID Proof": "John Smith",
-            "Date of Birth":                  "15/06/1988",
+            "Date of Birth":                  "2026-03-05",
             "Course Name":                    "CSWIP 3.1",
             ...all CRM field values...
         },
-        "record_id":  "738XXXXXXXXXX",   // used for logging only
-        "filename":   "TWI_JohnSmith.pdf" // optional
+        "record_id":  "738XXXXXXXXXX",
+        "filename":   "TWI_JohnSmith.pdf"  // optional
     }
 
     Returns:
     {
         "ok":         true,
         "job_id":     "uuid",
-        "filename":   "TWI_JohnSmith.pdf",
-        "pdf_base64": "JVBERi0x..."    // Deluge uses this to attach
+        "filename":   "TWI_JohnSmith.pdf"
     }
     """
     body        = await request.json()
@@ -495,7 +489,6 @@ async def generate(request: Request):
     if not PDF_TEMPLATE_PATH.exists():
         raise HTTPException(500, "PDF template not found on server")
 
-    # Candidate name for filename
     cname = ""
     for k in ("Candidate Name as per ID Proof", "Full_Name",
               "Last_Name", "Name", "name"):
@@ -510,7 +503,7 @@ async def generate(request: Request):
         mapped     = apply_mappings(record_data)
         fv         = build_field_values(mapped)
         pdf_bytes  = fill_pdf(template, fv)
-        # Delete previous PDF for this record (keep only latest)
+
         if record_id != "unknown":
             for old_job in load_jobs():
                 if old_job.get("record_id") == record_id:
@@ -518,7 +511,6 @@ async def generate(request: Request):
                     if old_pdf.exists():
                         old_pdf.unlink()
 
-        # Save PDF — valid for 7 days or until next generation
         (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
 
         log_job({
@@ -532,8 +524,8 @@ async def generate(request: Request):
         })
 
         return JSONResponse({
-            "ok":      True,
-            "job_id":  job_id,
+            "ok":       True,
+            "job_id":   job_id,
             "filename": filename,
         })
 
@@ -555,7 +547,6 @@ async def download_pdf(job_id: str):
     pdf_path = PDF_STORE / f"{job_id}.pdf"
     if not pdf_path.exists():
         raise HTTPException(404, detail="PDF not found or expired. Please regenerate from CRM.")
-    # Check 7-day expiry
     age_days = (datetime.now().timestamp() - pdf_path.stat().st_mtime) / 86400
     if age_days > 7:
         pdf_path.unlink()
@@ -571,15 +562,9 @@ async def download_pdf(job_id: str):
     )
 
 
-
-
 @app.get("/workdrive/{job_id}")
-async def get_workdrive_id(job_id: str):
-    """
-    Upload the generated PDF to Zoho WorkDrive and return the file ID.
-    Deluge calls this after /generate, then uses the file ID to attach to CRM.
-    """
-    import urllib.request as _ur, urllib.parse as _up
+async def get_workdrive_id(job_id: str, request: Request):
+    import urllib.request as _ur
 
     pdf_path = PDF_STORE / f"{job_id}.pdf"
     if not pdf_path.exists():
@@ -590,15 +575,10 @@ async def get_workdrive_id(job_id: str):
     filename = job.get("filename", f"TWI_{job_id[:6]}.pdf")
 
     WORKDRIVE_FOLDER = "j85fx89434c9ab31f481f95184423fc50d761"
-
-    # Token comes from the Authorization header — set by Deluge connection
     auth_header      = request.headers.get("Authorization", "")
     WORKDRIVE_TOKEN  = auth_header.replace("Zoho-oauthtoken ", "").strip()
-
     if not WORKDRIVE_TOKEN:
-        # Fallback to env var if set
         WORKDRIVE_TOKEN = os.environ.get("WORKDRIVE_TOKEN", "")
-
     if not WORKDRIVE_TOKEN:
         raise HTTPException(500, "No WorkDrive token — set WORKDRIVE_TOKEN env var in Render")
 
@@ -618,17 +598,14 @@ async def get_workdrive_id(job_id: str):
     with _ur.urlopen(req, timeout=30) as r:
         resp = json.loads(r.read())
 
-    # WorkDrive returns file ID in data[0].id
     try:
         file_id = resp["data"][0]["id"]
     except (KeyError, IndexError):
         raise HTTPException(500, f"WorkDrive upload failed: {resp}")
 
-    return JSONResponse({
-        "ok":       True,
-        "file_id":  file_id,
-        "filename": filename,
-    })
+    return JSONResponse({"ok": True, "file_id": file_id, "filename": filename})
+
+
 @app.get("/health")
 async def health():
     return JSONResponse({
@@ -636,6 +613,24 @@ async def health():
         "template": str(PDF_TEMPLATE_PATH) if PDF_TEMPLATE_PATH.exists() else "MISSING",
         "fields":   len(get_pdf_fields()),
         "jobs":     len(load_jobs()),
+    })
+
+
+@app.get("/fields")
+async def list_fields():
+    """
+    Lists all PDF form field names, types, and properties.
+    Use this to verify that COMB_FIELDS, AUTO_MAP_RULES, and checkbox
+    names in build_field_values() match the actual PDF.
+    """
+    fields = get_pdf_fields()
+    return JSONResponse({
+        "total": len(fields),
+        "text_fields":     sorted([k for k,v in fields.items() if v["type"] == "/Tx"]),
+        "button_fields":   sorted([k for k,v in fields.items() if v["type"] == "/Btn"]),
+        "comb_fields":     sorted([k for k,v in fields.items() if v["comb"]]),
+        "multiline_fields": sorted([k for k,v in fields.items() if v["multiline"]]),
+        "all": {k: v for k, v in sorted(fields.items())},
     })
 
 
@@ -697,10 +692,9 @@ tr:hover td{{background:#f8fafc}}
 
 @app.get("/", response_class=HTMLResponse)
 async def root(auth: str = Depends(require_auth)):
-    """Root page — links to all endpoints."""
-    tmpl_ok = PDF_TEMPLATE_PATH.exists()
-    fields  = len(get_pdf_fields())
-    jobs    = len(load_jobs())
+    tmpl_ok    = PDF_TEMPLATE_PATH.exists()
+    fields     = len(get_pdf_fields())
+    jobs       = len(load_jobs())
     tmpl_color = "#10b981" if tmpl_ok else "#ef4444"
     tmpl_text  = f"Found ({fields} fields scanned)" if tmpl_ok else "MISSING — see /debug"
     return HTMLResponse(f"""<!DOCTYPE html>
@@ -726,7 +720,6 @@ a.btn.grey{{background:#e2e8f0;color:#475569}}
 </style></head><body>
 <h1>📋 TWI PDF Rendering Engine</h1>
 <p class="sub">Blastline Institute — TWI Enrolment Form Filler</p>
-
 <div class="card">
   <h2>Status</h2>
   <div class="row"><span>PDF Template</span>
@@ -736,10 +729,10 @@ a.btn.grey{{background:#e2e8f0;color:#475569}}
   <div class="row"><span>Server</span>
     <span class="val ok">Running ✓</span></div>
 </div>
-
 <div class="card">
   <h2>Endpoints</h2>
   <a class="btn" href="/queue">📋 PDF Queue</a>
+  <a class="btn grey" href="/fields">Fields JSON</a>
   <a class="btn grey" href="/health">Health JSON</a>
   <a class="btn grey" href="/debug">Debug Paths</a>
   <a class="btn grey" href="/docs">API Docs</a>
@@ -749,28 +742,16 @@ a.btn.grey{{background:#e2e8f0;color:#475569}}
 
 @app.get("/debug")
 async def debug():
-    """Shows server file paths — useful for diagnosing template location issues."""
     import sys
-    cwd      = os.getcwd()
-    app_dir  = str(_APP_DIR)
-    data_dir = str(DATA_DIR)
-
-    # List files in app dir
-    try:
-        app_files = [f.name for f in _APP_DIR.iterdir()]
-    except Exception as e:
-        app_files = [str(e)]
-
-    # List files in data dir
-    try:
-        data_files = [f.name for f in DATA_DIR.iterdir()]
-    except Exception as e:
-        data_files = [str(e)]
-
+    cwd = os.getcwd()
+    try: app_files  = [f.name for f in _APP_DIR.iterdir()]
+    except Exception as e: app_files = [str(e)]
+    try: data_files = [f.name for f in DATA_DIR.iterdir()]
+    except Exception as e: data_files = [str(e)]
     return JSONResponse({
         "cwd":              cwd,
-        "app_dir":          app_dir,
-        "data_dir":         data_dir,
+        "app_dir":          str(_APP_DIR),
+        "data_dir":         str(DATA_DIR),
         "template_path":    str(PDF_TEMPLATE_PATH),
         "template_exists":  PDF_TEMPLATE_PATH.exists(),
         "app_dir_files":    sorted(app_files),
@@ -782,19 +763,12 @@ async def debug():
 
 @app.post("/upload-template")
 async def upload_template(request: Request):
-    """
-    Upload the PDF template directly to the server.
-    Use this if the PDF is not in your GitHub repo.
-
-    POST with Content-Type: application/pdf
-    Body: raw PDF bytes
-    """
     pdf_bytes = await request.body()
     if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
         raise HTTPException(400, "Invalid PDF — body must be raw PDF bytes")
     PDF_TEMPLATE_PATH.write_bytes(pdf_bytes)
     global _pdf_fields_cache
-    _pdf_fields_cache = {}          # force re-scan
+    _pdf_fields_cache = {}
     fields = len(get_pdf_fields())
     return JSONResponse({
         "ok":      True,
