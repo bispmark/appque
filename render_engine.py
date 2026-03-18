@@ -419,23 +419,54 @@ async def generate(request: Request):
         # Save locally for queue download
         (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
 
+        # Attach to CRM if access_token and module provided
+        access_token = body.get("access_token", "").strip()
+        module       = body.get("module", "").strip()
+        crm_attached = False
+        crm_error    = None
+
+        if access_token and module and record_id != "unknown":
+            try:
+                import urllib.request as _ur
+                boundary   = uuid.uuid4().hex
+                body_bytes = (
+                    f"--{boundary}\r\nContent-Disposition: form-data;"
+                    f" name=\"file\"; filename=\"{filename}\"\r\n"
+                    f"Content-Type: application/pdf\r\n\r\n"
+                ).encode() + pdf_bytes + f"\r\n--{boundary}--\r\n".encode()
+                url = f"https://www.zohoapis.in/crm/v2/{module}/{record_id}/Attachments"
+                req = _ur.Request(url, data=body_bytes, method="POST")
+                req.add_header("Authorization", f"Zoho-oauthtoken {access_token}")
+                req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+                with _ur.urlopen(req, timeout=20) as r:
+                    crm_resp = json.loads(r.read())
+                crm_attached = bool(crm_resp.get("data"))
+                if not crm_attached:
+                    crm_error = str(crm_resp)
+            except Exception as ce:
+                crm_error = str(ce)
+
         pdf_b64 = base64.b64encode(pdf_bytes).decode()
 
         log_job({
-            "id":         job_id,
-            "record_id":  record_id,
-            "candidate":  cname.replace("_", " "),
-            "filename":   filename,
-            "status":     "Done",
-            "created_at": datetime.now().isoformat(),
-            "error":      None,
+            "id":          job_id,
+            "record_id":   record_id,
+            "candidate":   cname.replace("_", " "),
+            "filename":    filename,
+            "status":      "Done",
+            "crm_attached": crm_attached,
+            "crm_error":   crm_error,
+            "created_at":  datetime.now().isoformat(),
+            "error":       None,
         })
 
         return JSONResponse({
-            "ok":         True,
-            "job_id":     job_id,
-            "filename":   filename,
-            "pdf_base64": pdf_b64,
+            "ok":          True,
+            "job_id":      job_id,
+            "filename":    filename,
+            "crm_attached": crm_attached,
+            "crm_error":   crm_error,
+            "pdf_base64":  pdf_b64,
         })
 
     except Exception as ex:
@@ -531,3 +562,112 @@ tr:hover td{{background:#f8fafc}}
 </tr></thead><tbody>
 {rows if jobs else '<tr><td colspan="6" class="empty">No jobs yet — click Generate TWI PDF inside a CRM record.</td></tr>'}
 </tbody></table></body></html>""")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Root page — links to all endpoints."""
+    tmpl_ok = PDF_TEMPLATE_PATH.exists()
+    fields  = len(get_pdf_fields())
+    jobs    = len(load_jobs())
+    tmpl_color = "#10b981" if tmpl_ok else "#ef4444"
+    tmpl_text  = f"Found ({fields} fields scanned)" if tmpl_ok else "MISSING — see /debug"
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>TWI PDF Engine</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+     background:#f8fafc;color:#1e293b;padding:40px;max-width:640px;margin:0 auto}}
+h1{{font-size:22px;font-weight:700;margin-bottom:6px}}
+.sub{{color:#64748b;font-size:13px;margin-bottom:32px}}
+.card{{background:#fff;border-radius:10px;padding:20px 24px;
+       box-shadow:0 1px 6px rgba(0,0,0,.08);margin-bottom:16px}}
+.card h2{{font-size:13px;font-weight:700;text-transform:uppercase;
+          letter-spacing:.05em;color:#64748b;margin-bottom:12px}}
+.row{{display:flex;justify-content:space-between;align-items:center;
+      padding:7px 0;border-bottom:1px solid #f1f5f9;font-size:13px}}
+.row:last-child{{border-bottom:none}}
+.val{{font-weight:600}}
+.ok{{color:#10b981}}.err{{color:#ef4444}}
+a.btn{{display:inline-block;margin:4px 4px 0 0;padding:7px 16px;border-radius:6px;
+       text-decoration:none;font-size:13px;font-weight:500;background:#3b82f6;color:#fff}}
+a.btn.grey{{background:#e2e8f0;color:#475569}}
+</style></head><body>
+<h1>📋 TWI PDF Rendering Engine</h1>
+<p class="sub">Blastline Institute — TWI Enrolment Form Filler</p>
+
+<div class="card">
+  <h2>Status</h2>
+  <div class="row"><span>PDF Template</span>
+    <span class="val" style="color:{tmpl_color}">{tmpl_text}</span></div>
+  <div class="row"><span>Jobs processed</span>
+    <span class="val">{jobs}</span></div>
+  <div class="row"><span>Server</span>
+    <span class="val ok">Running ✓</span></div>
+</div>
+
+<div class="card">
+  <h2>Endpoints</h2>
+  <a class="btn" href="/queue">📋 PDF Queue</a>
+  <a class="btn grey" href="/health">Health JSON</a>
+  <a class="btn grey" href="/debug">Debug Paths</a>
+  <a class="btn grey" href="/docs">API Docs</a>
+</div>
+</body></html>""")
+
+
+@app.get("/debug")
+async def debug():
+    """Shows server file paths — useful for diagnosing template location issues."""
+    import sys
+    cwd      = os.getcwd()
+    app_dir  = str(_APP_DIR)
+    data_dir = str(DATA_DIR)
+
+    # List files in app dir
+    try:
+        app_files = [f.name for f in _APP_DIR.iterdir()]
+    except Exception as e:
+        app_files = [str(e)]
+
+    # List files in data dir
+    try:
+        data_files = [f.name for f in DATA_DIR.iterdir()]
+    except Exception as e:
+        data_files = [str(e)]
+
+    return JSONResponse({
+        "cwd":              cwd,
+        "app_dir":          app_dir,
+        "data_dir":         data_dir,
+        "template_path":    str(PDF_TEMPLATE_PATH),
+        "template_exists":  PDF_TEMPLATE_PATH.exists(),
+        "app_dir_files":    sorted(app_files),
+        "data_dir_files":   sorted(data_files),
+        "python":           sys.version,
+        "env_DATA_DIR":     os.environ.get("DATA_DIR", "not set"),
+    })
+
+
+@app.post("/upload-template")
+async def upload_template(request: Request):
+    """
+    Upload the PDF template directly to the server.
+    Use this if the PDF is not in your GitHub repo.
+
+    POST with Content-Type: application/pdf
+    Body: raw PDF bytes
+    """
+    pdf_bytes = await request.body()
+    if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
+        raise HTTPException(400, "Invalid PDF — body must be raw PDF bytes")
+    PDF_TEMPLATE_PATH.write_bytes(pdf_bytes)
+    global _pdf_fields_cache
+    _pdf_fields_cache = {}          # force re-scan
+    fields = len(get_pdf_fields())
+    return JSONResponse({
+        "ok":      True,
+        "path":    str(PDF_TEMPLATE_PATH),
+        "size_kb": len(pdf_bytes) // 1024,
+        "fields":  fields,
+    })
