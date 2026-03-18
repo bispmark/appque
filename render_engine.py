@@ -29,9 +29,11 @@ import base64, io, json, os, re, textwrap, uuid
 from datetime import datetime, date
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
@@ -48,7 +50,24 @@ JOBS_FILE         = DATA_DIR / "render_jobs.json"
 PDF_STORE         = DATA_DIR / "rendered_pdfs"
 PDF_STORE.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="TWI PDF Rendering Engine")
+app      = FastAPI(title="TWI PDF Rendering Engine")
+security = HTTPBasic()
+
+# Credentials — override via QUEUE_USER and QUEUE_PASS env vars on Render
+QUEUE_USER = os.environ.get("QUEUE_USER", "blastline").encode()
+QUEUE_PASS = os.environ.get("QUEUE_PASS", "TWI@2026").encode()
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    """HTTP Basic Auth — protects queue and PDF download endpoints."""
+    user_ok = secrets.compare_digest(credentials.username.encode(), QUEUE_USER)
+    pass_ok = secrets.compare_digest(credentials.password.encode(), QUEUE_PASS)
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"],
     allow_methods=["*"], allow_headers=["*"],
@@ -592,7 +611,7 @@ async def health():
 
 
 @app.get("/queue", response_class=HTMLResponse)
-async def queue_page():
+async def queue_page(auth: str = Depends(require_auth)):
     jobs = load_jobs()
     rows = ""
     for job in jobs:
@@ -648,7 +667,7 @@ tr:hover td{{background:#f8fafc}}
 
 
 @app.get("/", response_class=HTMLResponse)
-async def root():
+async def root(auth: str = Depends(require_auth)):
     """Root page — links to all endpoints."""
     tmpl_ok = PDF_TEMPLATE_PATH.exists()
     fields  = len(get_pdf_fields())
