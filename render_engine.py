@@ -114,6 +114,19 @@ AUTO_MAP_RULES = [
     (r"^city$|address.?line.?2",                         "Permanent private address 2"),
     (r"^district$|address.?line.?3",                     "Permanent private address 3"),
     (r"pincode|postcode|postal",                         "Postcode"),
+    (r"correspondence.*1|correspondence.?address$",      "Correspondence address if different from above 1"),
+    (r"correspondence.*2",                               "Correspondence address if different from above 2"),
+    (r"correspondence.*3",                               "Correspondence address if different from above 3"),
+    (r"correspondence.*4",                               "Correspondence address if different from above 4"),
+    (r"invoice.*1|invoice.?address$",                    "Invoice address if different from below 1"),
+    (r"invoice.*2",                                      "Invoice address if different from below 2"),
+    (r"invoice.*3",                                      "Invoice address if different from below 3"),
+    (r"invoice.*4",                                      "Invoice address if different from below 4"),
+    (r"sponsoring.*address.*2|sponsoring.*2",            "Sponsoring Company and Address 2"),
+    (r"sponsoring.*address.*3|sponsoring.*3",            "Sponsoring Company and Address 3"),
+    (r"sponsoring.*pincode",                             "Postcode_2"),
+    (r"where.*heard|heard.*twi",                         "__heard__"),
+    (r"venue",                                           "__venue__"),
     (r"contact.?no|mobile|private.?tel",                 "Private Tel"),
     (r"emergency.?contact",                              "Tel"),
     (r"^email$|candidate.?email",                        "Email"),
@@ -189,15 +202,31 @@ def load_manual_mappings() -> dict:
     return {}
 
 def _split_dob(s: str):
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y"):
+    """
+    Split a date string into (DD, MM, YYYY).
+    Handles Zoho CRM date formats:
+      - YYYY-MM-DD  (API standard)
+      - DD/MM/YYYY
+      - MM/DD/YYYY
+      - DD-MM-YYYY
+      - DD-Mon-YYYY  e.g. 15-Nov-1988
+      - Mon DD, YYYY e.g. Nov 15, 1988
+    """
+    s = str(s).strip()
+    # Try standard formats first
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y",
+                "%d-%b-%Y", "%b %d, %Y", "%B %d, %Y",
+                "%d %b %Y", "%d %B %Y"):
         try:
-            d = datetime.strptime(str(s)[:10], fmt)
+            d = datetime.strptime(s[:12], fmt)
             return str(d.day).zfill(2), str(d.month).zfill(2), str(d.year)
         except ValueError:
             continue
-    digits = re.sub(r"\D", "", str(s))
+    # Fallback: extract digits
+    digits = re.sub(r"\D", "", s)
     if len(digits) == 8:
-        return digits[:2], digits[2:4], digits[4:]
+        # Assume YYYYMMDD (Zoho API format stripped of dashes)
+        return digits[6:8], digits[4:6], digits[0:4]
     return "", "", ""
 
 def apply_mappings(raw: dict) -> dict:
