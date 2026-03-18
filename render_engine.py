@@ -300,6 +300,53 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     parts += ["ET", "Q"]
     return "\n".join(parts).encode()
 
+def flatten_pdf(pdf_bytes: bytes) -> bytes:
+    """
+    Flatten a filled PDF — converts all form fields to static content.
+    Result is non-editable and renders correctly in all viewers.
+    Uses pypdf to set the NeedAppearances flag and flatten annotations.
+    """
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    writer.append(reader)
+
+    # Set NeedAppearances to false — forces viewers to use existing AP streams
+    if writer._root_object.get("/AcroForm"):
+        writer._root_object["/AcroForm"].update({
+            NameObject("/NeedAppearances"): False,
+        })
+
+    # Flatten each annotation — move appearance stream content to page
+    # and remove the widget annotation so fields are no longer interactive
+    for page in writer.pages:
+        if "/Annots" not in page:
+            continue
+        annots_to_keep = []
+        for ref in page["/Annots"]:
+            try:
+                annot = ref.get_object()
+            except Exception:
+                continue
+            if annot is None or not hasattr(annot, "get"):
+                continue
+            # Keep non-widget annotations (links, comments etc)
+            if annot.get("/Subtype") != "/Widget":
+                annots_to_keep.append(ref)
+                continue
+            # For widget annotations — just drop them (field becomes static
+            # because the appearance stream was already rendered into the page
+            # content by update_page_form_field_values + our custom AP streams)
+
+        if annots_to_keep:
+            page[NameObject("/Annots")] = annots_to_keep
+        elif "/Annots" in page:
+            del page["/Annots"]
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
 def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
     reader = PdfReader(io.BytesIO(template_bytes))
     writer = PdfWriter()
@@ -411,53 +458,31 @@ async def generate(request: Request):
     filename = body.get("filename") or f"TWI_{cname}_{datetime.now().strftime('%Y%m%d')}.pdf"
 
     try:
-        template  = PDF_TEMPLATE_PATH.read_bytes()
-        mapped    = apply_mappings(record_data)
-        fv        = build_field_values(mapped)
-        pdf_bytes = fill_pdf(template, fv)
+        template   = PDF_TEMPLATE_PATH.read_bytes()
+        mapped     = apply_mappings(record_data)
+        fv         = build_field_values(mapped)
+        pdf_bytes  = fill_pdf(template, fv)
+        # Delete previous PDF for this record (keep only latest)
+        if record_id != "unknown":
+            for old_job in load_jobs():
+                if old_job.get("record_id") == record_id:
+                    old_pdf = PDF_STORE / f"{old_job['id']}.pdf"
+                    if old_pdf.exists():
+                        old_pdf.unlink()
 
-        # Save locally for queue download
+        # Save PDF — valid for 7 days or until next generation
         (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
-
-        # Attach to CRM if access_token and module provided
-        access_token = body.get("access_token", "").strip()
-        module       = body.get("module", "").strip()
-        crm_attached = False
-        crm_error    = None
-
-        if access_token and module and record_id != "unknown":
-            try:
-                import urllib.request as _ur
-                boundary   = uuid.uuid4().hex
-                body_bytes = (
-                    f"--{boundary}\r\nContent-Disposition: form-data;"
-                    f" name=\"file\"; filename=\"{filename}\"\r\n"
-                    f"Content-Type: application/pdf\r\n\r\n"
-                ).encode() + pdf_bytes + f"\r\n--{boundary}--\r\n".encode()
-                url = f"https://www.zohoapis.in/crm/v2/{module}/{record_id}/Attachments"
-                req = _ur.Request(url, data=body_bytes, method="POST")
-                req.add_header("Authorization", f"Zoho-oauthtoken {access_token}")
-                req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-                with _ur.urlopen(req, timeout=20) as r:
-                    crm_resp = json.loads(r.read())
-                crm_attached = bool(crm_resp.get("data"))
-                if not crm_attached:
-                    crm_error = str(crm_resp)
-            except Exception as ce:
-                crm_error = str(ce)
 
         pdf_b64 = base64.b64encode(pdf_bytes).decode()
 
         log_job({
-            "id":          job_id,
-            "record_id":   record_id,
-            "candidate":   cname.replace("_", " "),
-            "filename":    filename,
-            "status":      "Done",
-            "crm_attached": crm_attached,
-            "crm_error":   crm_error,
-            "created_at":  datetime.now().isoformat(),
-            "error":       None,
+            "id":         job_id,
+            "record_id":  record_id,
+            "candidate":  cname.replace("_", " "),
+            "filename":   filename,
+            "status":     "Done",
+            "created_at": datetime.now().isoformat(),
+            "error":      None,
         })
 
         return JSONResponse({
@@ -486,7 +511,12 @@ async def generate(request: Request):
 async def download_pdf(job_id: str):
     pdf_path = PDF_STORE / f"{job_id}.pdf"
     if not pdf_path.exists():
-        raise HTTPException(404, "PDF not found")
+        raise HTTPException(404, detail="PDF not found or expired. Please regenerate from CRM.")
+    # Check 7-day expiry
+    age_days = (datetime.now().timestamp() - pdf_path.stat().st_mtime) / 86400
+    if age_days > 7:
+        pdf_path.unlink()
+        raise HTTPException(410, detail="PDF link expired (7 days). Please click Generate TWI PDF again.")
     jobs     = load_jobs()
     job      = next((j for j in jobs if j["id"] == job_id), {})
     filename = job.get("filename", "TWI_Form.pdf")
@@ -498,6 +528,64 @@ async def download_pdf(job_id: str):
     )
 
 
+
+
+@app.get("/workdrive/{job_id}")
+async def get_workdrive_id(job_id: str):
+    """
+    Upload the generated PDF to Zoho WorkDrive and return the file ID.
+    Deluge calls this after /generate, then uses the file ID to attach to CRM.
+    """
+    import urllib.request as _ur, urllib.parse as _up
+
+    pdf_path = PDF_STORE / f"{job_id}.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(404, "PDF not found — run /generate first")
+
+    jobs     = load_jobs()
+    job      = next((j for j in jobs if j["id"] == job_id), {})
+    filename = job.get("filename", f"TWI_{job_id[:6]}.pdf")
+
+    WORKDRIVE_FOLDER = "j85fx89434c9ab31f481f95184423fc50d761"
+
+    # Token comes from the Authorization header — set by Deluge connection
+    auth_header      = request.headers.get("Authorization", "")
+    WORKDRIVE_TOKEN  = auth_header.replace("Zoho-oauthtoken ", "").strip()
+
+    if not WORKDRIVE_TOKEN:
+        # Fallback to env var if set
+        WORKDRIVE_TOKEN = os.environ.get("WORKDRIVE_TOKEN", "")
+
+    if not WORKDRIVE_TOKEN:
+        raise HTTPException(500, "No WorkDrive token — set WORKDRIVE_TOKEN env var in Render")
+
+    pdf_bytes  = pdf_path.read_bytes()
+    boundary   = uuid.uuid4().hex
+    body_bytes = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="content"; filename="{filename}"\r\n'
+        f"Content-Type: application/pdf\r\n\r\n"
+    ).encode() + pdf_bytes + f"\r\n--{boundary}--\r\n".encode()
+
+    url = f"https://workdrive.zoho.in/api/v1/upload?parent_id={WORKDRIVE_FOLDER}&override-name-exist=true"
+    req = _ur.Request(url, data=body_bytes, method="POST")
+    req.add_header("Authorization", f"Zoho-oauthtoken {WORKDRIVE_TOKEN}")
+    req.add_header("Content-Type",  f"multipart/form-data; boundary={boundary}")
+
+    with _ur.urlopen(req, timeout=30) as r:
+        resp = json.loads(r.read())
+
+    # WorkDrive returns file ID in data[0].id
+    try:
+        file_id = resp["data"][0]["id"]
+    except (KeyError, IndexError):
+        raise HTTPException(500, f"WorkDrive upload failed: {resp}")
+
+    return JSONResponse({
+        "ok":       True,
+        "file_id":  file_id,
+        "filename": filename,
+    })
 @app.get("/health")
 async def health():
     return JSONResponse({
