@@ -111,48 +111,69 @@ SPECIAL_TOKENS = {
 }
 
 # Regex auto-map rules: (zoho_field_pattern, pdf_field_or_token)
+# ORDER MATTERS — first match wins. More specific rules must come before generic ones.
 AUTO_MAP_RULES = [
-    (r"batch.?date|exam.?date",                          "Event date"),
-    (r"course.?name|event.?title",                       "Event title"),
-    (r"candidate.?name|name.?as.?per.?id",               "Candidates Family Name as per ID  Passport"),
-    (r"twi.?candidate.?(number|id|no)",                  "undefined"),
-    (r"date.?of.?birth|dob",                             "__dob__"),
-    (r"^address$|address.?line.?1|permanent.?address",   "Permanent private address 1"),
-    (r"^city$|address.?line.?2",                         "Permanent private address 2"),
-    (r"^district$|address.?line.?3",                     "Permanent private address 3"),
-    (r"pincode|postcode|postal",                         "Postcode"),
-    (r"correspondence.*1|correspondence.?address$",      "Correspondence address if different from above 1"),
-    (r"correspondence.*2",                               "Correspondence address if different from above 2"),
-    (r"correspondence.*3",                               "Correspondence address if different from above 3"),
-    (r"correspondence.*4",                               "Correspondence address if different from above 4"),
-    (r"invoice.*1|invoice.?address$",                    "Invoice address if different from below 1"),
-    (r"invoice.*2",                                      "Invoice address if different from below 2"),
-    (r"invoice.*3",                                      "Invoice address if different from below 3"),
-    (r"invoice.*4",                                      "Invoice address if different from below 4"),
-    (r"sponsoring.*address.*2|sponsoring.*2",            "Sponsoring Company and Address 2"),
-    (r"sponsoring.*address.*3|sponsoring.*3",            "Sponsoring Company and Address 3"),
-    (r"sponsoring.*pincode",                             "Postcode_2"),
-    (r"where.*heard|heard.*twi",                         "__heard__"),
-    (r"contact.?no|mobile|private.?tel",                 "Private Tel"),
-    (r"emergency.?contact",                              "Tel"),
-    (r"^email$|candidate.?email",                        "Email"),
-    (r"bgas.?cert|pcn.?cert|bgas.?no",                   "PCN or BGAS Approval Number"),
-    (r"cswip.*cert|cswip.*no",                           "Current CSWIP qualifications held"),
-    (r"exam.*type|examination.*type",                    "__exam_type__"),
-    (r"exam.*body|examination.*body",                    "__exam_body__"),
-    (r"sponsor.*type|application.*type",                 "__sponsor_type__"),
-    (r"disability|special.?need",                        "__disability__"),
-    (r"gdpr|data.?consent",                              "__gdpr__"),
-    (r"heard.*twi|how.*heard",                           "__heard__"),
-    (r"duties|responsibilities|pre.?cert.*exp",          "1"),
-    (r"ndt.*exp|plant.*exp",                             "1_2"),
-    (r"company.?name|present.?company|sponsor.*company", "Sponsoring Company and Address 1"),
-    (r"company.*order|order.*no",                        "Company order No"),
-    (r"approving.*manager|manager.*name",                "name"),
-    (r"verifier.?name",                                  "Name in capitals"),
-    (r"verifier.?phone|verifier.?tel",                   "Telephone no"),
-    (r"verifier.?email",                                 "Email Address"),
-    (r"designation|company.*position",                   "Company  position"),
+    # ── Event / Course ────────────────────────────────────────────────────────
+    (r"batch.?date|exam.?date",                                    "Event date"),
+    (r"course.?name|event.?title",                                 "Event title"),
+    # ── Candidate ─────────────────────────────────────────────────────────────
+    (r"candidate.?name|name.?as.?per.?id",                         "Candidates Family Name as per ID  Passport"),
+    (r"twi.?candidate.?(number|id|no)",                            "undefined"),
+    (r"date.?of.?birth|dob",                                       "__dob__"),
+    # ── Permanent Address ─────────────────────────────────────────────────────
+    (r"^address$|address.?line.?1|permanent.?address",             "Permanent private address 1"),
+    (r"^city$|address.?line.?2",                                   "Permanent private address 2"),
+    (r"^district$|address.?line.?3",                               "Permanent private address 3"),
+    # ── Postcodes — sponsoring MUST come before generic pincode rule ──────────
+    (r"sponsoring.*pincode",                                       "Postcode_2"),
+    (r"pincode|postcode|postal",                                   "Postcode"),
+    # ── Correspondence & Invoice ──────────────────────────────────────────────
+    (r"correspondence.*1|correspondence.?address$",                "Correspondence address if different from above 1"),
+    (r"correspondence.*2",                                         "Correspondence address if different from above 2"),
+    (r"correspondence.*3",                                         "Correspondence address if different from above 3"),
+    (r"correspondence.*4",                                         "Correspondence address if different from above 4"),
+    (r"invoice.*1|invoice.?address$",                              "Invoice address if different from below 1"),
+    (r"invoice.*2",                                                "Invoice address if different from below 2"),
+    (r"invoice.*3",                                                "Invoice address if different from below 3"),
+    (r"invoice.*4",                                                "Invoice address if different from below 4"),
+    # ── Sponsoring Company ────────────────────────────────────────────────────
+    (r"sponsoring.*address.*2|sponsoring.*2",                      "Sponsoring Company and Address 2"),
+    (r"sponsoring.*address.*3|sponsoring.*3",                      "Sponsoring Company and Address 3"),
+    # ── Contact fields — exact/specific rules before generic ──────────────────
+    (r"^contact.?name$",                                           "Contact Name"),
+    (r"contact.?tel(ephone)?",                                     "Tel_2"),
+    (r"contact.?email",                                            "Email_2"),
+    (r"contact.?no|mobile|private.?tel",                           "Private Tel"),
+    (r"emergency.?contact",                                        "Tel"),
+    (r"^email$|candidate.?email",                                  "Email"),
+    # ── Qualifications ────────────────────────────────────────────────────────
+    (r"pcn.*bgas.*approval|bgas.*approval|pcn.*approval",          "PCN or BGAS Approval Number"),
+    (r"bgas.?cert|pcn.?cert|bgas.?no",                             "PCN or BGAS Approval Number"),
+    (r"cswip.*cert|cswip.*no|cswip.*qualif|current.*cswip",        "Current CSWIP qualifications held"),
+    # ── Exam / Sponsor type ───────────────────────────────────────────────────
+    (r"exam.*type|examination.*type",                              "__exam_type__"),
+    (r"exam.*body|examination.*body",                              "__exam_body__"),
+    (r"sponsor.*type|application.*type",                           "__sponsor_type__"),
+    # ── Checkboxes ────────────────────────────────────────────────────────────
+    (r"disability|special.?need",                                  "__disability__"),
+    (r"gdpr|data.?consent",                                        "__gdpr__"),
+    (r"heard.*twi|how.*heard|where.*heard",                        "__heard__"),
+    # ── Experience statements ─────────────────────────────────────────────────
+    (r"duties|responsibilities",                                   "1"),
+    (r"section.?5.?detail|detailed.?statement",                    "1_2"),
+    (r"ndt.*exp|plant.*exp",                                       "1_2"),
+    # ── Sponsoring Company (name/address) ─────────────────────────────────────
+    (r"company.?name|present.?company|sponsor.*company",           "Sponsoring Company and Address 1"),
+    (r"company.*order|order.*no",                                  "Company order No"),
+    (r"approving.*manager|manager.*name",                          "name"),
+    # ── Verifier — specific rules before generic designation rule ─────────────
+    (r"verifier.*professional|professional.*relation",             "to the candidate"),
+    (r"verifier.*company.*pos|verifier.*position",                 "Company  position"),
+    (r"verifier.?name",                                            "Name in capitals"),
+    (r"verifier.?phone|verifier.?tel",                             "Telephone no"),
+    (r"verifier.?email",                                           "Email Address"),
+    # ── Catch-all ─────────────────────────────────────────────────────────────
+    (r"designation|company.*position",                             "Company  position"),
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
