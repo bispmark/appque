@@ -473,8 +473,6 @@ async def generate(request: Request):
         # Save PDF — valid for 7 days or until next generation
         (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
 
-        pdf_b64 = base64.b64encode(pdf_bytes).decode()
-
         log_job({
             "id":         job_id,
             "record_id":  record_id,
@@ -486,12 +484,9 @@ async def generate(request: Request):
         })
 
         return JSONResponse({
-            "ok":          True,
-            "job_id":      job_id,
-            "filename":    filename,
-            "crm_attached": crm_attached,
-            "crm_error":   crm_error,
-            "pdf_base64":  pdf_b64,
+            "ok":      True,
+            "job_id":  job_id,
+            "filename": filename,
         })
 
     except Exception as ex:
