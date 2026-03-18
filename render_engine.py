@@ -137,6 +137,7 @@ AUTO_MAP_RULES = [
     (r"invoice.*3",                                                "Invoice address if different from below 3"),
     (r"invoice.*4",                                                "Invoice address if different from below 4"),
     # ── Sponsoring Company ────────────────────────────────────────────────────
+    (r"sponsoring.*address.*1|sponsoring.*1",                      "Sponsoring Company and Address 1"),
     (r"sponsoring.*address.*2|sponsoring.*2",                      "Sponsoring Company and Address 2"),
     (r"sponsoring.*address.*3|sponsoring.*3",                      "Sponsoring Company and Address 3"),
     # ── Contact fields — exact/specific rules before generic ──────────────────
@@ -278,7 +279,7 @@ def apply_mappings(raw: dict) -> dict:
             norm_zk = re.sub(r"[^a-z0-9]", "", zk.lower())
             for pf in pdf_text:
                 norm_pf = re.sub(r"[^a-z0-9]", "", pf.lower())
-                if norm_zk and norm_pf and (norm_zk in norm_pf or norm_pf in norm_zk):
+                if norm_zk and norm_pf and len(norm_pf) >= 3 and (norm_zk in norm_pf or norm_pf in norm_zk):
                     matched = pf
                     break
         auto[zk] = matched or "__ignore__"
