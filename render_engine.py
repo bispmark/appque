@@ -437,6 +437,196 @@ def log_job(job: dict):
     jobs.insert(0, job)
     save_jobs(jobs[:500])
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DATASHEET PDF GENERATOR  (reportlab)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Ordered sections: (section_title, [list of field label keys])
+DATASHEET_SECTIONS = [
+    ("Candidate", [
+        "Candidate Name as per ID Proof",
+        "TWI Candidate Number",
+        "Date of Birth",
+        "Application Type",
+    ]),
+    ("Course / Event", [
+        "Course Name",
+        "Batch Date",
+    ]),
+    ("Contact", [
+        "Contact No",
+        "Emergency Contact",
+        "Email",
+    ]),
+    ("Permanent Address", [
+        "Address",
+        "City",
+        "District",
+        "Pincode",
+    ]),
+    ("Correspondence Address", [
+        "Correspondence Address 1",
+        "Correspondence Address 2",
+        "Correspondence Address 3",
+        "Correspondence Address 4",
+    ]),
+    ("Invoice Address", [
+        "Invoice Address 1",
+        "Invoice Address 2",
+        "Invoice Address 3",
+        "Invoice Address 4",
+    ]),
+    ("Sponsoring Company", [
+        "Sponsoring Address 1",
+        "Sponsoring Address 2",
+        "Sponsoring Address 3",
+        "Sponsoring Pincode",
+        "Approving Manager",
+        "Company Order No",
+        "Contact Name",
+        "Contact Telephone",
+        "Contact Email",
+    ]),
+    ("Qualifications", [
+        "PCN or BGAS Approval Number",
+        "Current CSWIP Qualifications",
+    ]),
+    ("Experience", [
+        "Section 2 - Detailed Statement",
+        "Section 5 - Detailed Statement",
+    ]),
+    ("Verifier", [
+        "Verifier Name",
+        "Verifier Company Name",
+        "Verifier Designation",
+        "Verifier Professional Relation",
+        "Verifier Phone",
+        "Verifier Email",
+        "Verified Date",
+    ]),
+]
+
+
+def build_datasheet_pdf(record_data: dict, candidate_name: str) -> bytes:
+    """
+    Generate a single-page A4 data verification sheet using reportlab.
+    - Skips blank fields to save space
+    - fs=7, tight padding to fit all data on one page
+    - Falls back gracefully to 2 pages only if experience fields are very long
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Table, TableStyle, Paragraph,
+        Spacer, HRFlowable,
+    )
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER
+
+    buf = io.BytesIO()
+
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=10*mm, rightMargin=10*mm,
+        topMargin=10*mm,  bottomMargin=10*mm,
+    )
+
+    W = A4[0] - 20*mm   # usable width
+
+    FS        = 7          # base font size
+    LEADING   = 9          # line height
+    PAD_V     = 1          # top/bottom cell padding (tight — fits single page)
+    PAD_L     = 3          # left cell padding
+    THIN      = 0.5
+    COL_LABEL = W * 0.36
+    COL_VALUE = W * 0.64
+
+    title_style = ParagraphStyle(
+        "ds_title", fontSize=10, fontName="Helvetica-Bold",
+        alignment=TA_CENTER, spaceAfter=0.5*mm,
+    )
+    sub_style = ParagraphStyle(
+        "ds_sub", fontSize=7, fontName="Helvetica",
+        alignment=TA_CENTER, spaceAfter=1*mm, textColor=colors.grey,
+    )
+    label_style = ParagraphStyle(
+        "ds_label", fontSize=FS, fontName="Helvetica-Bold",
+        leading=LEADING, wordWrap="CJK",
+    )
+    value_style = ParagraphStyle(
+        "ds_value", fontSize=FS, fontName="Helvetica",
+        leading=LEADING, wordWrap="CJK",
+    )
+    section_style = ParagraphStyle(
+        "ds_section", fontSize=7, fontName="Helvetica-Bold",
+    )
+
+    story = []
+
+    # ── Title block ───────────────────────────────────────────────────────────
+    story.append(Paragraph("TWI Application — Data Verification Sheet", title_style))
+    story.append(Paragraph(
+        f"Candidate: {candidate_name} &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"Generated: {date.today().strftime('%d/%m/%Y')}",
+        sub_style,
+    ))
+    story.append(HRFlowable(
+        width="100%", thickness=0.75, color=colors.black, spaceAfter=2*mm,
+    ))
+
+    # ── Sections ──────────────────────────────────────────────────────────────
+    for section_title, fields in DATASHEET_SECTIONS:
+        # Only include fields that have a non-empty value
+        rows = []
+        for field_label in fields:
+            raw_val = record_data.get(field_label, "")
+            val = str(raw_val).strip() if raw_val else ""
+            if not val:
+                continue   # skip blank fields — saves space
+            rows.append([
+                Paragraph(field_label, label_style),
+                Paragraph(val,         value_style),
+            ])
+
+        if not rows:
+            continue   # skip entire section if all fields empty
+
+        # Section header
+        sec_table = Table(
+            [[Paragraph(section_title.upper(), section_style), ""]],
+            colWidths=[W, 0],
+        )
+        sec_table.setStyle(TableStyle([
+            ("SPAN",          (0,0), (1,0)),
+            ("BACKGROUND",    (0,0), (-1,-1), colors.HexColor("#eeeeee")),
+            ("BOX",           (0,0), (-1,-1), THIN, colors.black),
+            ("TOPPADDING",    (0,0), (-1,-1), PAD_V),
+            ("BOTTOMPADDING", (0,0), (-1,-1), PAD_V),
+            ("LEFTPADDING",   (0,0), (-1,-1), PAD_L),
+        ]))
+        story.append(sec_table)
+
+        # Data rows
+        data_table = Table(rows, colWidths=[COL_LABEL, COL_VALUE])
+        data_table.setStyle(TableStyle([
+            ("BOX",           (0,0), (-1,-1), THIN, colors.black),
+            ("INNERGRID",     (0,0), (-1,-1), THIN, colors.black),
+            ("VALIGN",        (0,0), (-1,-1), "TOP"),
+            ("TOPPADDING",    (0,0), (-1,-1), PAD_V),
+            ("BOTTOMPADDING", (0,0), (-1,-1), PAD_V),
+            ("LEFTPADDING",   (0,0), (-1,-1), PAD_L),
+            ("RIGHTPADDING",  (0,0), (-1,-1), PAD_L),
+            ("BACKGROUND",    (0,0), (0,-1),  colors.HexColor("#fafafa")),
+        ]))
+        story.append(data_table)
+        story.append(Spacer(1, 1*mm))
+
+    doc.build(story)
+    return buf.getvalue()
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
@@ -520,6 +710,70 @@ async def generate(request: Request):
             "id":         job_id,
             "record_id":  record_id,
             "candidate":  cname.replace("_", " "),
+            "filename":   filename,
+            "status":     "Error",
+            "created_at": datetime.now().isoformat(),
+            "error":      str(ex),
+        })
+        raise HTTPException(500, str(ex))
+
+
+@app.post("/datasheet")
+async def datasheet(request: Request):
+    """
+    Called by Zoho workflow automation on record creation.
+
+    Body (JSON):
+    {
+        "record_data": { "Candidate Name as per ID Proof": "...", ... },
+        "record_id":   "738XXXXXXXXXX",
+        "filename":    "DS_JohnSmith.pdf"   // optional
+    }
+
+    Returns:
+    {
+        "ok":       true,
+        "job_id":   "uuid",
+        "filename": "DS_JohnSmith.pdf"
+    }
+    """
+    body        = await request.json()
+    record_data = body.get("record_data", {})
+    record_id   = body.get("record_id", "unknown")
+    job_id      = str(uuid.uuid4())
+
+    if not record_data:
+        raise HTTPException(400, "record_data is required")
+
+    cname = str(record_data.get("Candidate Name as per ID Proof", "Candidate")).strip()
+    safe_name = cname.replace(" ", "_")
+    filename  = body.get("filename") or f"DS_{safe_name}_{datetime.now().strftime('%Y%m%d')}.pdf"
+
+    try:
+        pdf_bytes = build_datasheet_pdf(record_data, cname)
+        (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
+
+        log_job({
+            "id":         job_id,
+            "record_id":  record_id,
+            "candidate":  cname,
+            "filename":   filename,
+            "status":     "Done",
+            "created_at": datetime.now().isoformat(),
+            "error":      None,
+        })
+
+        return JSONResponse({
+            "ok":       True,
+            "job_id":   job_id,
+            "filename": filename,
+        })
+
+    except Exception as ex:
+        log_job({
+            "id":         job_id,
+            "record_id":  record_id,
+            "candidate":  cname,
             "filename":   filename,
             "status":     "Error",
             "created_at": datetime.now().isoformat(),
