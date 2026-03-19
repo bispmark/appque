@@ -331,7 +331,7 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     """
     x1, y1, x2, y2 = rect
     w, h = x2 - x1, y2 - y1
-    PAD_TOP = 2.0; PAD_BOT = 9.0; LG = 1.3; MAX_FS = 8.0; MIN_FS = 5.0; CPP = 0.52
+    PAD_TOP = 2.0; PAD_BOT = 9.0; LG = 1.3; MAX_FS = 9.0; MIN_FS = 6.0; CPP = 0.52
 
     def wrap(text, fs):
         mc = max(1, int(w / (fs * CPP)))
@@ -361,14 +361,28 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
         f"0 0 {w:.2f} {h:.2f} re W n",   # clipping rectangle = field BBox
         "BT", f"/Helv {fs:.1f} Tf", "0 0 0 rg",
     ]
+    usable_w = w - 4.0  # 2pt left + 2pt right margin
     for i, line in enumerate(lines):
         yp = sy - i * lh
         if yp < PAD_BOT:
             break
         safe = line.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
+        # Last line: left-align (Tw=0). All others: justify by spreading word gaps.
+        is_last = (i == len(lines) - 1) or (sy - (i+1)*lh < PAD_BOT)
+        if not is_last:
+            words = line.split(" ")
+            gaps  = len(words) - 1
+            if gaps > 0:
+                line_w = len(line) * fs * 0.52
+                tw     = min(max((usable_w - line_w) / gaps, 0), 4.0)
+            else:
+                tw = 0.0
+        else:
+            tw = 0.0
+        parts.append(f"{tw:.3f} Tw")
         parts.append(f"2.0 {yp:.2f} Td" if i == 0 else f"0 {-lh:.2f} Td")
         parts.append(f"({safe}) Tj")
-    parts += ["ET", "Q"]
+    parts += ["0 Tw", "ET", "Q"]
     return "\n".join(parts).encode()
 
 def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
@@ -384,11 +398,9 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
     # and proper text wrapping for multiline fields without custom AP streams.
     if "/AcroForm" in writer._root_object:
         writer._root_object["/AcroForm"].update({
-            NameObject("/NeedAppearances"): BooleanObject(True),
+            NameObject("/NeedAppearances"): BooleanObject(False),
         })
 
-    # Only build custom AP streams for COMB fields (character-by-character
-    # positioning). Multiline fields are left to the viewer's native rendering.
     for page in writer.pages:
         for ref in page.get("/Annots", []):
             try:
@@ -402,20 +414,29 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
             fname = str(annot.get("/T", ""))
             value = fv.get(fname, "")
             rect  = tuple(float(v) for v in annot.get("/Rect", [0,0,0,0]))
+            ap_bytes = None
 
-            if fname in COMB_FIELDS and value:
-                ap_bytes = _build_comb_ap(value, COMB_FIELDS[fname], rect)
-                stream = DecodedStreamObject()
-                stream.set_data(ap_bytes)
-                stream.update({
-                    NameObject("/Type"):    NameObject("/XObject"),
-                    NameObject("/Subtype"): NameObject("/Form"),
-                    NameObject("/BBox"):    RectangleObject([0, 0,
-                                                rect[2]-rect[0], rect[3]-rect[1]]),
-                })
-                ap = DictionaryObject()
-                ap[NameObject("/N")] = writer._add_object(stream)
-                annot[NameObject("/AP")] = ap
+            if fname in COMB_FIELDS:
+                if value:
+                    ap_bytes = _build_comb_ap(value, COMB_FIELDS[fname], rect)
+            elif annot.get("/Ff") and bool(int(annot["/Ff"]) & (1 << 12)):
+                if value:
+                    ap_bytes = _build_multiline_ap(value, rect)
+
+            if ap_bytes is None:
+                continue
+
+            stream = DecodedStreamObject()
+            stream.set_data(ap_bytes)
+            stream.update({
+                NameObject("/Type"):    NameObject("/XObject"),
+                NameObject("/Subtype"): NameObject("/Form"),
+                NameObject("/BBox"):    RectangleObject([0, 0,
+                                            rect[2]-rect[0], rect[3]-rect[1]]),
+            })
+            ap = DictionaryObject()
+            ap[NameObject("/N")] = writer._add_object(stream)
+            annot[NameObject("/AP")] = ap
 
     out = io.BytesIO()
     writer.write(out)
