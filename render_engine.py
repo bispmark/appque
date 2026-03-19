@@ -79,23 +79,6 @@ app.add_middleware(
 # ══════════════════════════════════════════════════════════════════════════════
 
 # NOTE: Exam type (Initial/Supplementary/Renewal/Bridging/Retest) and
-# Exam body (CSWIP/PCN/AWS/BGAS/ASNT) checkboxes are VISUAL ONLY in this
-# PDF — they are not form fields and cannot be filled programmatically.
-# Check Box23, Check Box28, Check Box1.0 do NOT exist in this PDF.
-
-HEARD_FIELDS = {
-    "LinkedIn":              ("Check Box9",  "/1"),
-    "Facebook":              ("Check Box10", "/2"),
-    "NDT News / Insight":    ("Check Box11", "/3"),
-    "Exhibitions / Events":  ("Check Box12", "/4"),
-    "Word of Mouth":         ("Check Box13", "/5"),
-    "TWI Corporate Website": ("Check Box15", "/7"),
-    "CSWIP Website":         ("Check Box16", "/8"),
-    "Email marketing":       ("Check Box17", "/9"),
-    "Bulletin / Connect":    ("Check Box18", "/10"),
-    "Google search":         ("Check Box19", "/Yes"),
-    "Other":                 ("Check Box20", "/Yes"),
-}
 
 # Comb fields: name → max character count (must match /MaxLen in PDF)
 COMB_FIELDS = {
@@ -106,8 +89,6 @@ COMB_FIELDS = {
 }
 
 SPECIAL_TOKENS = {
-    "__dob__", "__exam_type__", "__exam_body__", "__sponsor_type__",
-    "__disability__", "__gdpr__", "__heard__", "__ignore__",
 }
 
 # Regex auto-map rules: (zoho_field_pattern, pdf_field_or_token)
@@ -152,13 +133,7 @@ AUTO_MAP_RULES = [
     (r"bgas.?cert|pcn.?cert|bgas.?no",                             "PCN or BGAS Approval Number"),
     (r"cswip.*cert|cswip.*no|cswip.*qualif|current.*cswip",        "Current CSWIP qualifications held"),
     # ── Exam / Sponsor type ───────────────────────────────────────────────────
-    (r"exam.*type|examination.*type",                              "__exam_type__"),
-    (r"exam.*body|examination.*body",                              "__exam_body__"),
-    (r"sponsor.*type|application.*type",                           "__sponsor_type__"),
     # ── Checkboxes ────────────────────────────────────────────────────────────
-    (r"disability|special.?need",                                  "__disability__"),
-    (r"gdpr|data.?consent",                                        "__gdpr__"),
-    (r"heard.*twi|how.*heard|where.*heard",                        "__heard__"),
     # ── Experience statements ─────────────────────────────────────────────────
     (r"duties|responsibilities",                                   "1"),
     (r"section.?5.?detail|detailed.?statement",                    "1_2"),
@@ -175,6 +150,8 @@ AUTO_MAP_RULES = [
     (r"verifier.?email",                                           "Email Address"),
     # ── Catch-all ─────────────────────────────────────────────────────────────
     (r"designation|company.*position",                             "Company  position"),
+    # Verified date → PDF "Date" field (verifier section, page 4)
+    (r"verified.?date",                                            "Date"),
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -308,37 +285,13 @@ def build_field_values(mapped: dict) -> dict:
     fv = {k: str(v) for k, v in mapped.items()
           if k in pdf_text and v is not None}
 
-    def _p(*keys):
-        for k in keys:
-            v = str(mapped.get(k, "")).strip()
-            if v: return v
-        return ""
-
-    heard = _p("__heard__")
-    hb    = {fid: "/Off" for fid, _ in HEARD_FIELDS.values()}
-    if heard in HEARD_FIELDS:
-        fid, val = HEARD_FIELDS[heard]; hb[fid] = val
-
-    fv.update({
-        # Disability: Check Box2a is the "Yes" tick box (states: /Off, /Yes)
-        "Check Box2a": "/Yes" if _p("__disability__").lower() == "yes" else "/Off",
-        # GDPR consent tick box
-        "Check Box21": "/Yes" if _p("__gdpr__").lower() in ("yes","true","1") else "/Off",
-        **hb,
-    })
-
-    # NOTE: Exam type and exam body checkboxes (Initial/Supplementary/CSWIP/PCN etc.)
-    # are NOT form fields in this PDF version — they are printed visual elements only.
-    # If those checkboxes become fillable in a future PDF revision, map them here.
+    # All checkboxes (disability, GDPR, heard-about, sponsor type, exam type/body)
+    # are left blank for the candidate to complete on the printed form.
 
     if not fv.get("Date"):
         fv["Date"] = date.today().strftime("%d/%m/%Y")
 
     return fv
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PDF FILLER
-# ══════════════════════════════════════════════════════════════════════════════
 
 def _build_comb_ap(value: str, max_len: int, rect: tuple, fs: float = 8.0) -> bytes:
     """
@@ -373,6 +326,7 @@ def _build_comb_ap(value: str, max_len: int, rect: tuple, fs: float = 8.0) -> by
 def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     """
     Build an appearance stream for a multiline text field with auto-scaling font.
+    A clipping path is set to the field bounds so text never bleeds into adjacent fields.
     """
     x1, y1, x2, y2 = rect
     w, h = x2 - x1, y2 - y1
@@ -395,7 +349,12 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     lines = wrap(value, fs)
     lh    = fs * LG
     sy    = h - PAD - fs
-    parts = ["q", "BT", f"/Helv {fs:.1f} Tf", "0 0 0 rg"]
+    # Clip to field bounds — prevents text bleeding into adjacent fields
+    parts = [
+        "q",
+        f"0 0 {w:.2f} {h:.2f} re W n",   # clipping rectangle = field BBox
+        "BT", f"/Helv {fs:.1f} Tf", "0 0 0 rg",
+    ]
     for i, line in enumerate(lines):
         yp = sy - i * lh
         if yp < PAD:
@@ -563,7 +522,6 @@ async def generate(request: Request):
         })
         raise HTTPException(500, str(ex))
 
-
 @app.get("/pdf/{job_id}", response_class=Response)
 async def download_pdf(job_id: str):
     pdf_path = PDF_STORE / f"{job_id}.pdf"
@@ -582,7 +540,6 @@ async def download_pdf(job_id: str):
         headers={"Content-Disposition": f'attachment; filename="{filename}"',
                  "Cache-Control": "no-cache"},
     )
-
 
 @app.get("/workdrive/{job_id}")
 async def get_workdrive_id(job_id: str, request: Request):
@@ -627,7 +584,6 @@ async def get_workdrive_id(job_id: str, request: Request):
 
     return JSONResponse({"ok": True, "file_id": file_id, "filename": filename})
 
-
 @app.get("/health")
 async def health():
     return JSONResponse({
@@ -636,7 +592,6 @@ async def health():
         "fields":   len(get_pdf_fields()),
         "jobs":     len(load_jobs()),
     })
-
 
 @app.get("/fields")
 async def list_fields():
@@ -654,7 +609,6 @@ async def list_fields():
         "multiline_fields": sorted([k for k,v in fields.items() if v["multiline"]]),
         "all": {k: v for k, v in sorted(fields.items())},
     })
-
 
 @app.get("/queue", response_class=HTMLResponse)
 async def queue_page(auth: str = Depends(require_auth)):
@@ -711,7 +665,6 @@ tr:hover td{{background:#f8fafc}}
 {rows if jobs else '<tr><td colspan="6" class="empty">No jobs yet — click Generate TWI PDF inside a CRM record.</td></tr>'}
 </tbody></table></body></html>""")
 
-
 @app.get("/", response_class=HTMLResponse)
 async def root(auth: str = Depends(require_auth)):
     tmpl_ok    = PDF_TEMPLATE_PATH.exists()
@@ -761,7 +714,6 @@ a.btn.grey{{background:#e2e8f0;color:#475569}}
 </div>
 </body></html>""")
 
-
 @app.get("/debug")
 async def debug():
     import sys
@@ -781,7 +733,6 @@ async def debug():
         "python":           sys.version,
         "env_DATA_DIR":     os.environ.get("DATA_DIR", "not set"),
     })
-
 
 @app.post("/upload-template")
 async def upload_template(request: Request):
