@@ -330,7 +330,7 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     """
     x1, y1, x2, y2 = rect
     w, h = x2 - x1, y2 - y1
-    PAD = 2.0; LG = 1.3; MAX_FS = 8.0; MIN_FS = 5.0; CPP = 0.52
+    PAD_TOP = 2.0; PAD_BOT = 5.0; LG = 1.3; MAX_FS = 8.0; MIN_FS = 5.0; CPP = 0.52
 
     def wrap(text, fs):
         mc = max(1, int(w / (fs * CPP)))
@@ -342,13 +342,18 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     fs = MAX_FS
     while fs >= MIN_FS:
         lines = wrap(value, fs)
-        if len(lines) * fs * LG + PAD * 2 <= h:
+        if len(lines) * fs * LG + PAD_TOP + PAD_BOT <= h:
             break
         fs -= 0.5
     fs    = max(fs, MIN_FS)
     lines = wrap(value, fs)
     lh    = fs * LG
-    sy    = h - PAD - fs
+    # Anchor from bottom: last line sits at PAD_BOT, stack upward.
+    # This guarantees the last line never touches the field bottom border.
+    n     = len(lines)
+    # Anchor from bottom: guarantees last line always clears PAD_BOT.
+    # The clip rectangle handles any overflow at the top.
+    sy    = PAD_BOT + (n - 1) * lh + fs
     # Clip to field bounds — prevents text bleeding into adjacent fields
     parts = [
         "q",
@@ -357,7 +362,7 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     ]
     for i, line in enumerate(lines):
         yp = sy - i * lh
-        if yp < PAD:
+        if yp < PAD_BOT:
             break
         safe = line.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
         parts.append(f"{PAD:.1f} {yp:.2f} Td" if i == 0 else f"0 {-lh:.2f} Td")
