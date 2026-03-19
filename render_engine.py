@@ -41,6 +41,7 @@ import secrets
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
     DecodedStreamObject, DictionaryObject, NameObject, RectangleObject,
+    BooleanObject,
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -378,6 +379,16 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
     for page in writer.pages:
         writer.update_page_form_field_values(page, fv, auto_regenerate=False)
 
+    # Set NeedAppearances=True — tells PDF viewers to render fields using
+    # their /DA (default appearance) natively. This gives correct font size
+    # and proper text wrapping for multiline fields without custom AP streams.
+    if "/AcroForm" in writer._root_object:
+        writer._root_object["/AcroForm"].update({
+            NameObject("/NeedAppearances"): BooleanObject(True),
+        })
+
+    # Only build custom AP streams for COMB fields (character-by-character
+    # positioning). Multiline fields are left to the viewer's native rendering.
     for page in writer.pages:
         for ref in page.get("/Annots", []):
             try:
@@ -391,29 +402,20 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
             fname = str(annot.get("/T", ""))
             value = fv.get(fname, "")
             rect  = tuple(float(v) for v in annot.get("/Rect", [0,0,0,0]))
-            ap_bytes = None
 
-            if fname in COMB_FIELDS:
-                if value:
-                    ap_bytes = _build_comb_ap(value, COMB_FIELDS[fname], rect)
-            elif annot.get("/Ff") and bool(int(annot["/Ff"]) & (1 << 12)):
-                if value:
-                    ap_bytes = _build_multiline_ap(value, rect)
-
-            if ap_bytes is None:
-                continue
-
-            stream = DecodedStreamObject()
-            stream.set_data(ap_bytes)
-            stream.update({
-                NameObject("/Type"):    NameObject("/XObject"),
-                NameObject("/Subtype"): NameObject("/Form"),
-                NameObject("/BBox"):    RectangleObject([0, 0,
-                                            rect[2]-rect[0], rect[3]-rect[1]]),
-            })
-            ap = DictionaryObject()
-            ap[NameObject("/N")] = writer._add_object(stream)
-            annot[NameObject("/AP")] = ap
+            if fname in COMB_FIELDS and value:
+                ap_bytes = _build_comb_ap(value, COMB_FIELDS[fname], rect)
+                stream = DecodedStreamObject()
+                stream.set_data(ap_bytes)
+                stream.update({
+                    NameObject("/Type"):    NameObject("/XObject"),
+                    NameObject("/Subtype"): NameObject("/Form"),
+                    NameObject("/BBox"):    RectangleObject([0, 0,
+                                                rect[2]-rect[0], rect[3]-rect[1]]),
+                })
+                ap = DictionaryObject()
+                ap[NameObject("/N")] = writer._add_object(stream)
+                annot[NameObject("/AP")] = ap
 
     out = io.BytesIO()
     writer.write(out)
