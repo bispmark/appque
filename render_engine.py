@@ -330,7 +330,7 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     """
     x1, y1, x2, y2 = rect
     w, h = x2 - x1, y2 - y1
-    PAD_TOP = 2.0; PAD_BOT = 5.0; LG = 1.3; MAX_FS = 8.0; MIN_FS = 5.0; CPP = 0.52
+    PAD_TOP = 2.0; PAD_BOT = 9.0; LG = 1.3; MAX_FS = 8.0; MIN_FS = 5.0; CPP = 0.52
 
     def wrap(text, fs):
         mc = max(1, int(w / (fs * CPP)))
