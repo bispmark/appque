@@ -365,7 +365,7 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
         if yp < PAD_BOT:
             break
         safe = line.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
-        parts.append(f"{PAD:.1f} {yp:.2f} Td" if i == 0 else f"0 {-lh:.2f} Td")
+        parts.append(f"2.0 {yp:.2f} Td" if i == 0 else f"0 {-lh:.2f} Td")
         parts.append(f"({safe}) Tj")
     parts += ["ET", "Q"]
     return "\n".join(parts).encode()
