@@ -34,6 +34,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import secrets
+from collections import OrderedDict
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
@@ -467,6 +476,190 @@ def log_job(job: dict):
 # ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DATASHEET PDF GENERATOR  (ReportLab — styled Blastline Institute report)
+# ══════════════════════════════════════════════════════════════════════════════
+
+DATASHEET_FIELDS = [
+    # Event & Examination
+    ("TWI Candidate Number",          "TWI Candidate Number",         "Event & Examination"),
+    ("Course Name",                   "Course Name",                  "Event & Examination"),
+    ("Batch Date",                    "Exam Date",                    "Event & Examination"),
+    ("Examination Type",              "Examination Type",             "Event & Examination"),
+    ("PCN or BGAS Approval Number",   "BGAS / PCN Cert No",          "Event & Examination"),
+    ("Current CSWIP Qualifications",  "Current CSWIP Qualifications", "Event & Examination"),
+    # Candidate
+    ("Candidate Name as per ID Proof","Candidate Name (as per ID)",  "Candidate Details"),
+    ("Date of Birth",                 "Date of Birth",                "Candidate Details"),
+    ("Application Type",              "Application Type",             "Candidate Details"),
+    ("Contact No",                    "Mobile / Contact No",          "Candidate Details"),
+    ("Emergency Contact",             "Emergency Contact",            "Candidate Details"),
+    ("Email",                         "Email",                        "Candidate Details"),
+    ("Address",                       "Address Line 1",               "Candidate Details"),
+    ("City",                          "City",                         "Candidate Details"),
+    ("District",                      "District",                     "Candidate Details"),
+    ("Pincode",                       "Pincode",                      "Candidate Details"),
+    # Correspondence
+    ("Correspondence Address 1",      "Correspondence Addr 1",        "Correspondence Address"),
+    ("Correspondence Address 2",      "Correspondence Addr 2",        "Correspondence Address"),
+    ("Correspondence Address 3",      "Correspondence Addr 3",        "Correspondence Address"),
+    ("Correspondence Address 4",      "Correspondence Addr 4",        "Correspondence Address"),
+    # Invoice
+    ("Invoice Address 1",             "Invoice Addr 1",               "Invoice Address"),
+    ("Invoice Address 2",             "Invoice Addr 2",               "Invoice Address"),
+    ("Invoice Address 3",             "Invoice Addr 3",               "Invoice Address"),
+    ("Invoice Address 4",             "Invoice Addr 4",               "Invoice Address"),
+    # Sponsoring Company
+    ("Sponsoring Address 1",          "Company Name / Addr 1",        "Sponsoring Company"),
+    ("Sponsoring Address 2",          "Company Addr 2",               "Sponsoring Company"),
+    ("Sponsoring Address 3",          "Company Addr 3",               "Sponsoring Company"),
+    ("Sponsoring Pincode",            "Company Pincode",              "Sponsoring Company"),
+    ("Approving Manager",             "Approving Manager",            "Sponsoring Company"),
+    ("Company Order No",              "Company Order No",             "Sponsoring Company"),
+    ("Contact Name",                  "Contact Name",                 "Sponsoring Company"),
+    ("Contact Telephone",             "Contact Telephone",            "Sponsoring Company"),
+    ("Contact Email",                 "Contact Email",                "Sponsoring Company"),
+    # Experience
+    ("Section 2 - Detailed Statement","Section 2 — Detailed Statement","Experience"),
+    ("Section 5 - Detailed Statement","Section 5 — Detailed Statement","Experience"),
+    # Verifier
+    ("Verifier Name",                 "Verifier Name",                "Verifier Details"),
+    ("Verifier Company Name",         "Verifier Company",             "Verifier Details"),
+    ("Verifier Designation",          "Verifier Designation",         "Verifier Details"),
+    ("Verifier Professional Relation","Professional Relation",        "Verifier Details"),
+    ("Verifier Phone",                "Verifier Phone",               "Verifier Details"),
+    ("Verifier Email",                "Verifier Email",               "Verifier Details"),
+    ("Verified Date",                 "Verified Date",                "Verifier Details"),
+]
+
+
+def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
+    """Generate styled Blastline Institute data sheet PDF using ReportLab."""
+    BRAND      = colors.HexColor("#1e3a5f")
+    BRAND_LITE = colors.HexColor("#e8f0fb")
+    GREY_TXT   = colors.HexColor("#6b7280")
+    ROW_ALT    = colors.HexColor("#f7f9fc")
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=18*mm, rightMargin=18*mm,
+        topMargin=14*mm, bottomMargin=14*mm,
+    )
+
+    sty_title   = ParagraphStyle("title",   fontSize=15, fontName="Helvetica-Bold",
+                                 textColor=colors.white, alignment=TA_LEFT, spaceAfter=0)
+    sty_sub     = ParagraphStyle("sub",     fontSize=9,  fontName="Helvetica",
+                                 textColor=colors.white, alignment=TA_RIGHT, spaceAfter=0)
+    sty_section = ParagraphStyle("section", fontSize=8.5,fontName="Helvetica-Bold",
+                                 textColor=colors.white, alignment=TA_LEFT,
+                                 leftIndent=4, spaceAfter=0, spaceBefore=0)
+    sty_label   = ParagraphStyle("label",   fontSize=8,  fontName="Helvetica-Bold",
+                                 textColor=BRAND, alignment=TA_LEFT)
+    sty_value   = ParagraphStyle("value",   fontSize=8.5,fontName="Helvetica",
+                                 textColor=colors.HexColor("#111827"), alignment=TA_LEFT)
+    sty_empty   = ParagraphStyle("empty",   fontSize=8.5,fontName="Helvetica",
+                                 textColor=GREY_TXT, alignment=TA_LEFT)
+    sty_footer  = ParagraphStyle("footer",  fontSize=7,  fontName="Helvetica",
+                                 textColor=GREY_TXT, alignment=TA_CENTER)
+
+    story = []
+    pw    = A4[0] - 36*mm
+
+    # Header
+    hdr = Table([[
+        Paragraph("Blastline Institute", sty_title),
+        Paragraph("TWI Application Data Sheet", sty_sub),
+    ]], colWidths=[pw*0.55, pw*0.45])
+    hdr.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,-1), BRAND),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ("TOPPADDING",    (0,0),(-1,-1), 10),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 10),
+        ("LEFTPADDING",   (0,0),(0,0),   8),
+        ("RIGHTPADDING",  (1,0),(1,0),   8),
+    ]))
+    story.append(hdr)
+
+    # Meta row
+    today = date.today().strftime("%d-%b-%Y")
+    cname = record_data.get("Candidate Name as per ID Proof","") or record_id
+    meta  = Table([[
+        Paragraph(f"Candidate: <b>{cname}</b>", ParagraphStyle("m1",fontSize=8,
+            fontName="Helvetica",textColor=BRAND,alignment=TA_LEFT)),
+        Paragraph(f"Generated: <b>{today}</b>  ·  Record: <b>{record_id}</b>",
+            ParagraphStyle("m2",fontSize=7.5,fontName="Helvetica",
+            textColor=GREY_TXT,alignment=TA_RIGHT)),
+    ]], colWidths=[pw*0.5, pw*0.5])
+    meta.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,-1), BRAND_LITE),
+        ("TOPPADDING",    (0,0),(-1,-1), 4),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 4),
+        ("LEFTPADDING",   (0,0),(-1,-1), 6),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 6),
+        ("LINEBELOW",     (0,0),(-1,-1), 0.5, BRAND),
+    ]))
+    story.append(meta)
+    story.append(Spacer(1, 4*mm))
+
+    # Sections
+    sections = OrderedDict()
+    for key, label, section in DATASHEET_FIELDS:
+        sections.setdefault(section, []).append((key, label))
+
+    for sec_name, fields in sections.items():
+        sec_tbl = Table([[Paragraph(sec_name.upper(), sty_section)]], colWidths=[pw])
+        sec_tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0),(-1,-1), BRAND),
+            ("TOPPADDING",    (0,0),(-1,-1), 4),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 4),
+            ("LEFTPADDING",   (0,0),(-1,-1), 6),
+        ]))
+        story.append(sec_tbl)
+
+        row_data = []
+        for i in range(0, len(fields), 2):
+            pair = fields[i:i+2]
+            row  = []
+            for key, label in pair:
+                val = str(record_data.get(key,"") or "").strip()
+                row.append(Paragraph(label, sty_label))
+                row.append(Paragraph(val, sty_value) if val
+                           else Paragraph("—", sty_empty))
+            while len(row) < 4:
+                row.append(Paragraph("", sty_empty))
+            row_data.append(row)
+
+        ts = TableStyle([
+            ("VALIGN",        (0,0),(-1,-1), "TOP"),
+            ("TOPPADDING",    (0,0),(-1,-1), 5),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 5),
+            ("LEFTPADDING",   (0,0),(-1,-1), 5),
+            ("RIGHTPADDING",  (0,0),(-1,-1), 5),
+            ("LINEBELOW",     (0,0),(-1,-1), 0.3, colors.HexColor("#e5e7eb")),
+            ("BOX",           (0,0),(-1,-1), 0.5, colors.HexColor("#d1d5db")),
+        ])
+        for r in range(0, len(row_data), 2):
+            ts.add("BACKGROUND", (0,r),(-1,r), ROW_ALT)
+
+        tbl = Table(row_data, colWidths=[pw*0.2, pw*0.3, pw*0.2, pw*0.3])
+        tbl.setStyle(ts)
+        story.append(tbl)
+        story.append(Spacer(1, 3*mm))
+
+    # Footer
+    story.append(HRFlowable(width="100%", thickness=0.5, color=BRAND))
+    story.append(Spacer(1, 2*mm))
+    story.append(Paragraph(
+        "Blastline Institute  ·  Confidential  ·  TWI PDF Engine",
+        sty_footer
+    ))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
+
 @app.post("/generate")
 async def generate(request: Request):
     """
@@ -556,6 +749,77 @@ async def generate(request: Request):
         })
         raise HTTPException(500, str(ex))
 
+
+
+
+@app.post("/datasheet")
+async def datasheet(request: Request):
+    """
+    Generate a raw data sheet PDF from CRM record data.
+    Called by the Generate Raw Sheet Deluge automation.
+
+    Body: { record_data: {...}, record_id: "...", module: "..." }
+    Returns: { ok, job_id, filename }
+    """
+    body        = await request.json()
+    record_data = body.get("record_data", {})
+    record_id   = body.get("record_id", "unknown")
+    job_id      = str(uuid.uuid4())
+
+    if not record_data:
+        raise HTTPException(400, "record_data is required")
+
+    cname = ""
+    for k in ("Candidate Name as per ID Proof", "Name", "name"):
+        if record_data.get(k):
+            cname = str(record_data[k]).strip().replace(" ", "_")
+            break
+    cname    = cname or "Candidate"
+    filename = f"DataSheet_{cname}_{datetime.now().strftime('%Y%m%d')}.pdf"
+
+    try:
+        pdf_bytes = generate_datasheet_pdf(record_data, record_id)
+
+        # Delete previous datasheet for this record
+        if record_id != "unknown":
+            for old_job in load_jobs():
+                if (old_job.get("record_id") == record_id and
+                        old_job.get("type") == "datasheet"):
+                    old_pdf = PDF_STORE / f"{old_job['id']}.pdf"
+                    if old_pdf.exists():
+                        old_pdf.unlink()
+
+        (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
+
+        log_job({
+            "id":         job_id,
+            "record_id":  record_id,
+            "candidate":  cname.replace("_", " "),
+            "filename":   filename,
+            "status":     "Done",
+            "type":       "datasheet",
+            "created_at": datetime.now().isoformat(),
+            "error":      None,
+        })
+
+        return JSONResponse({
+            "ok":       True,
+            "job_id":   job_id,
+            "filename": filename,
+        })
+
+    except Exception as ex:
+        log_job({
+            "id":         job_id,
+            "record_id":  record_id,
+            "candidate":  cname.replace("_", " "),
+            "filename":   filename,
+            "status":     "Error",
+            "type":       "datasheet",
+            "created_at": datetime.now().isoformat(),
+            "error":      str(ex),
+        })
+        raise HTTPException(500, str(ex))
 
 @app.get("/pdf/{job_id}", response_class=Response)
 async def download_pdf(job_id: str):
