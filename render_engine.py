@@ -20,9 +20,6 @@ GET  /pdf/{job_id}
 GET  /health
     Server status check.
 
-GET  /fields
-    Lists all PDF form field names — use to verify mappings.
-
 Run
 ---
     uvicorn render_engine:app --host 0.0.0.0 --port 8504
@@ -41,7 +38,6 @@ import secrets
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
     DecodedStreamObject, DictionaryObject, NameObject, RectangleObject,
-    BooleanObject,
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -57,10 +53,12 @@ PDF_STORE.mkdir(parents=True, exist_ok=True)
 app      = FastAPI(title="TWI PDF Rendering Engine")
 security = HTTPBasic()
 
+# Credentials — override via QUEUE_USER and QUEUE_PASS env vars on Render
 QUEUE_USER = os.environ.get("QUEUE_USER", "blastline").encode()
 QUEUE_PASS = os.environ.get("QUEUE_PASS", "TWI@2026").encode()
 
 def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    """HTTP Basic Auth — protects queue and PDF download endpoints."""
     user_ok = secrets.compare_digest(credentials.username.encode(), QUEUE_USER)
     pass_ok = secrets.compare_digest(credentials.password.encode(), QUEUE_PASS)
     if not (user_ok and pass_ok):
@@ -79,80 +77,76 @@ app.add_middleware(
 # FIELD METADATA
 # ══════════════════════════════════════════════════════════════════════════════
 
-# NOTE: Exam type (Initial/Supplementary/Renewal/Bridging/Retest) and
-
-# Comb fields: name → max character count (must match /MaxLen in PDF)
-COMB_FIELDS = {
-    "undefined": 6,   # TWI Candidate ID
-    "D":         2,   # DOB day
-    "M":         2,   # DOB month
-    "Y":         4,   # DOB year
+EXAM_TYPE_MAP = {
+    "Initial":"/1", "Supplementary":"/2", "Renewal":"/3",
+    "Bridging":"/4", "Retest":"/5",
 }
-
+EXAM_BODY_MAP = {
+    "CSWIP":"/6", "PCN":"/7", "AWS":"/8", "BGAS":"/9", "ASNT":"/10",
+}
+HEARD_FIELDS = {
+    "LinkedIn":              ("Check Box9",  "/1"),
+    "Facebook":              ("Check Box10", "/2"),
+    "NDT News / Insight":    ("Check Box11", "/3"),
+    "Exhibitions / Events":  ("Check Box12", "/4"),
+    "Word of Mouth":         ("Check Box13", "/5"),
+    "TWI Corporate Website": ("Check Box15", "/7"),
+    "CSWIP Website":         ("Check Box16", "/8"),
+    "Email marketing":       ("Check Box17", "/9"),
+    "Bulletin / Connect":    ("Check Box18", "/10"),
+    "Google search":         ("Check Box19", "/Yes"),
+    "Other":                 ("Check Box20", "/Yes"),
+}
+COMB_FIELDS   = {"undefined": 6, "D": 2, "M": 2, "Y": 4}
 SPECIAL_TOKENS = {
+    "__dob__", "__exam_type__", "__exam_body__", "__sponsor_type__",
+    "__disability__", "__gdpr__", "__heard__", "__ignore__",
 }
 
 # Regex auto-map rules: (zoho_field_pattern, pdf_field_or_token)
-# ORDER MATTERS — first match wins. More specific rules must come before generic ones.
 AUTO_MAP_RULES = [
-    # ── Event / Course ────────────────────────────────────────────────────────
-    (r"batch.?date|exam.?date",                                    "Event date"),
-    (r"course.?name|event.?title",                                 "Event title"),
-    # ── Candidate ─────────────────────────────────────────────────────────────
-    (r"candidate.?name|name.?as.?per.?id",                         "Candidates Family Name as per ID  Passport"),
-    (r"twi.?candidate.?(number|id|no)",                            "undefined"),
-    (r"date.?of.?birth|dob",                                       "__dob__"),
-    # ── Permanent Address ─────────────────────────────────────────────────────
-    (r"^address$|address.?line.?1|permanent.?address",             "Permanent private address 1"),
-    (r"^city$|address.?line.?2",                                   "Permanent private address 2"),
-    (r"^district$|address.?line.?3",                               "Permanent private address 3"),
-    # ── Postcodes — sponsoring MUST come before generic pincode rule ──────────
-    (r"sponsoring.*pincode",                                       "Postcode_2"),
-    (r"pincode|postcode|postal",                                   "Postcode"),
-    # ── Correspondence & Invoice ──────────────────────────────────────────────
-    (r"correspondence.*1|correspondence.?address$",                "Correspondence address if different from above 1"),
-    (r"correspondence.*2",                                         "Correspondence address if different from above 2"),
-    (r"correspondence.*3",                                         "Correspondence address if different from above 3"),
-    (r"correspondence.*4",                                         "Correspondence address if different from above 4"),
-    (r"invoice.*1|invoice.?address$",                              "Invoice address if different from below 1"),
-    (r"invoice.*2",                                                "Invoice address if different from below 2"),
-    (r"invoice.*3",                                                "Invoice address if different from below 3"),
-    (r"invoice.*4",                                                "Invoice address if different from below 4"),
-    # ── Sponsoring Company ────────────────────────────────────────────────────
-    (r"sponsoring.*address.*1|sponsoring.*1",                      "Sponsoring Company and Address 1"),
-    (r"sponsoring.*address.*2|sponsoring.*2",                      "Sponsoring Company and Address 2"),
-    (r"sponsoring.*address.*3|sponsoring.*3",                      "Sponsoring Company and Address 3"),
-    # ── Contact fields — exact/specific rules before generic ──────────────────
-    (r"^contact.?name$",                                           "Contact Name"),
-    (r"contact.?tel(ephone)?",                                     "Tel_2"),
-    (r"contact.?email",                                            "Email_2"),
-    (r"contact.?no|mobile|private.?tel",                           "Private Tel"),
-    (r"emergency.?contact",                                        "Tel"),
-    (r"^email$|candidate.?email",                                  "Email"),
-    # ── Qualifications ────────────────────────────────────────────────────────
-    (r"pcn.*bgas.*approval|bgas.*approval|pcn.*approval",          "PCN or BGAS Approval Number"),
-    (r"bgas.?cert|pcn.?cert|bgas.?no",                             "PCN or BGAS Approval Number"),
-    (r"cswip.*cert|cswip.*no|cswip.*qualif|current.*cswip",        "Current CSWIP qualifications held"),
-    # ── Exam / Sponsor type ───────────────────────────────────────────────────
-    # ── Checkboxes ────────────────────────────────────────────────────────────
-    # ── Experience statements ─────────────────────────────────────────────────
-    (r"duties|responsibilities",                                   "1"),
-    (r"section.?5.?detail|detailed.?statement",                    "1_2"),
-    (r"ndt.*exp|plant.*exp",                                       "1_2"),
-    # ── Sponsoring Company (name/address) ─────────────────────────────────────
-    (r"company.?name|present.?company|sponsor.*company",           "Sponsoring Company and Address 1"),
-    (r"company.*order|order.*no",                                  "Company order No"),
-    (r"approving.*manager|manager.*name",                          "name"),
-    # ── Verifier — specific rules before generic designation rule ─────────────
-    (r"verifier.*professional|professional.*relation",             "to the candidate"),
-    (r"verifier.*company.*pos|verifier.*position",                 "Company  position"),
-    (r"verifier.?name",                                            "Name in capitals"),
-    (r"verifier.?phone|verifier.?tel",                             "Telephone no"),
-    (r"verifier.?email",                                           "Email Address"),
-    # ── Catch-all ─────────────────────────────────────────────────────────────
-    (r"designation|company.*position",                             "Company  position"),
-    # Verified date → PDF "Date" field (verifier section, page 4)
-    (r"verified.?date",                                            "Date"),
+    (r"batch.?date|exam.?date",                          "Event date"),
+    (r"course.?name|event.?title",                       "Event title"),
+    (r"candidate.?name|name.?as.?per.?id",               "Candidates Family Name as per ID  Passport"),
+    (r"twi.?candidate.?(number|id|no)",                  "undefined"),
+    (r"date.?of.?birth|dob",                             "__dob__"),
+    (r"^address$|address.?line.?1|permanent.?address",   "Permanent private address 1"),
+    (r"^city$|address.?line.?2",                         "Permanent private address 2"),
+    (r"^district$|address.?line.?3",                     "Permanent private address 3"),
+    (r"pincode|postcode|postal",                         "Postcode"),
+    (r"correspondence.*1|correspondence.?address$",      "Correspondence address if different from above 1"),
+    (r"correspondence.*2",                               "Correspondence address if different from above 2"),
+    (r"correspondence.*3",                               "Correspondence address if different from above 3"),
+    (r"correspondence.*4",                               "Correspondence address if different from above 4"),
+    (r"invoice.*1|invoice.?address$",                    "Invoice address if different from below 1"),
+    (r"invoice.*2",                                      "Invoice address if different from below 2"),
+    (r"invoice.*3",                                      "Invoice address if different from below 3"),
+    (r"invoice.*4",                                      "Invoice address if different from below 4"),
+    (r"sponsoring.*address.*2|sponsoring.*2",            "Sponsoring Company and Address 2"),
+    (r"sponsoring.*address.*3|sponsoring.*3",            "Sponsoring Company and Address 3"),
+    (r"sponsoring.*pincode",                             "Postcode_2"),
+    (r"where.*heard|heard.*twi",                         "__heard__"),
+    (r"venue",                                           "__venue__"),
+    (r"contact.?no|mobile|private.?tel",                 "Private Tel"),
+    (r"emergency.?contact",                              "Tel"),
+    (r"^email$|candidate.?email",                        "Email"),
+    (r"bgas.?cert|pcn.?cert|bgas.?no",                   "PCN or BGAS Approval Number"),
+    (r"cswip.*cert|cswip.*no",                           "Current CSWIP qualifications held"),
+    (r"exam.*type|examination.*type",                    "__exam_type__"),
+    (r"exam.*body|examination.*body",                    "__exam_body__"),
+    (r"sponsor.*type|application.*type",                 "__sponsor_type__"),
+    (r"disability|special.?need",                        "__disability__"),
+    (r"gdpr|data.?consent",                              "__gdpr__"),
+    (r"heard.*twi|how.*heard",                           "__heard__"),
+    (r"duties|responsibilities|pre.?cert.*exp",          "1"),
+    (r"ndt.*exp|plant.*exp",                             "1_2"),
+    (r"company.?name|present.?company|sponsor.*company", "Sponsoring Company and Address 1"),
+    (r"company.*order|order.*no",                        "Company order No"),
+    (r"approving.*manager|manager.*name",                "name"),
+    (r"verifier.?name",                                  "Name in capitals"),
+    (r"verifier.?phone|verifier.?tel",                   "Telephone no"),
+    (r"verifier.?email",                                 "Email Address"),
+    (r"designation|company.*position",                   "Company  position"),
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -211,8 +205,7 @@ def _split_dob(s: str):
     """
     Split a date string into (DD, MM, YYYY).
     Handles Zoho CRM date formats:
-      - YYYY-MM-DD                  (API standard)
-      - YYYY-MM-DDTHH:MM:SS+05:30  (Zoho ISO datetime — strips time part)
+      - YYYY-MM-DD  (API standard)
       - DD/MM/YYYY
       - MM/DD/YYYY
       - DD-MM-YYYY
@@ -220,10 +213,7 @@ def _split_dob(s: str):
       - Mon DD, YYYY e.g. Nov 15, 1988
     """
     s = str(s).strip()
-
-    # Strip ISO datetime suffix: "2026-03-05T18:30:00+05:30" → "2026-03-05"
-    s = re.sub(r"T\d{2}:\d{2}.*$", "", s).strip()
-
+    # Try standard formats first
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y",
                 "%d-%b-%Y", "%b %d, %Y", "%B %d, %Y",
                 "%d %b %Y", "%d %B %Y"):
@@ -232,13 +222,11 @@ def _split_dob(s: str):
             return str(d.day).zfill(2), str(d.month).zfill(2), str(d.year)
         except ValueError:
             continue
-
-    # Fallback: extract digits only
+    # Fallback: extract digits
     digits = re.sub(r"\D", "", s)
     if len(digits) == 8:
-        # Assume YYYYMMDD (Zoho API date stripped of dashes)
+        # Assume YYYYMMDD (Zoho API format stripped of dashes)
         return digits[6:8], digits[4:6], digits[0:4]
-
     return "", "", ""
 
 def apply_mappings(raw: dict) -> dict:
@@ -246,6 +234,7 @@ def apply_mappings(raw: dict) -> dict:
     pdf_text   = {k for k,v in pdf_fields.items() if v["type"] == "/Tx"}
     manual     = load_manual_mappings()
 
+    # Auto-map all incoming keys
     auto = {}
     for zk in raw:
         matched = None
@@ -257,11 +246,12 @@ def apply_mappings(raw: dict) -> dict:
             norm_zk = re.sub(r"[^a-z0-9]", "", zk.lower())
             for pf in pdf_text:
                 norm_pf = re.sub(r"[^a-z0-9]", "", pf.lower())
-                if norm_zk and norm_pf and len(norm_pf) >= 3 and (norm_zk in norm_pf or norm_pf in norm_zk):
+                if norm_zk and norm_pf and (norm_zk in norm_pf or norm_pf in norm_zk):
                     matched = pf
                     break
         auto[zk] = matched or "__ignore__"
 
+    # Manual overrides take priority
     effective = {**auto, **{k: v for k, v in manual.items() if k in raw}}
 
     out = {}
@@ -271,7 +261,6 @@ def apply_mappings(raw: dict) -> dict:
             continue
         if target == "__dob__":
             dd, dm, dy = _split_dob(str(v))
-            print(f"[DOB] raw='{v}' → D='{dd}' M='{dm}' Y='{dy}'")
             out["D"] = dd; out["M"] = dm; out["Y"] = dy
         elif target in SPECIAL_TOKENS:
             out[target] = str(v) if v is not None else ""
@@ -283,55 +272,62 @@ def build_field_values(mapped: dict) -> dict:
     pdf_fields = get_pdf_fields()
     pdf_text   = {k for k,v in pdf_fields.items() if v["type"] == "/Tx"}
 
-    fv = {k: str(v) for k, v in mapped.items()
-          if k in pdf_text and v is not None}
+    # ALL CAPS — TWI form requires capital letters throughout
+    # Exclude fields where case matters: email, date, URLs
+    NO_CAPS = {"Email", "Email_2", "Email Address", "Date",
+               "Event date", "Batch Date"}
+    fv = {
+        k: (str(v) if k in NO_CAPS else str(v).upper())
+        for k, v in mapped.items()
+        if k in pdf_text and v is not None
+    }
 
-    # All checkboxes (disability, GDPR, heard-about, sponsor type, exam type/body)
-    # are left blank for the candidate to complete on the printed form.
+    def _p(*keys):
+        for k in keys:
+            v = str(mapped.get(k, "")).strip()
+            if v: return v
+        return ""
 
+    heard = _p("__heard__")
+    hb    = {fid: "/Off" for fid, _ in HEARD_FIELDS.values()}
+    if heard in HEARD_FIELDS:
+        fid, val = HEARD_FIELDS[heard]; hb[fid] = val
+
+    fv.update({
+        "Check Box2":   "/1" if _p("__disability__").lower() == "yes" else "/2",
+        "Check Box23":  EXAM_TYPE_MAP.get(_p("__exam_type__"), "/Off"),
+        "Check Box28":  EXAM_BODY_MAP.get(_p("__exam_body__"), "/Off"),
+        "Check Box1.0": "/1" if "self" in _p("__sponsor_type__").lower() else "/2",
+        "Check Box21":  "/Yes" if _p("__gdpr__").lower() in ("yes","true","1") else "/Off",
+        **hb,
+    })
     if not fv.get("Date"):
         fv["Date"] = date.today().strftime("%d/%m/%Y")
-
     return fv
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PDF FILLER
+# ══════════════════════════════════════════════════════════════════════════════
+
 def _build_comb_ap(value: str, max_len: int, rect: tuple, fs: float = 8.0) -> bytes:
-    """
-    Build a custom appearance stream for a comb (segmented) text field.
-    Centers each character within its cell using Courier font.
-
-    IMPORTANT: /Tf must be INSIDE the BT/ET block — placing it outside
-    causes corrupt font selection in some PDF renderers.
-    """
     x1, y1, x2, y2 = rect
-    w      = x2 - x1
-    h      = y2 - y1
-    cell_w = w / max_len
-    base   = (h - fs) / 2.0 + 1.0
-
-    # q — save graphics state
-    # BT — begin text block (Tf MUST come after BT, not before)
-    lines = ["q", "BT", f"/Cour {fs} Tf", "0 0 0 rg"]
-
-    val = str(value).ljust(max_len)[:max_len]
+    cell_w = (x2 - x1) / max_len
+    base   = (y2 - y1 - fs) / 2.0 + 1.0
+    lines  = ["q", f"/Cour {fs} Tf", "0 0 0 rg", "BT"]
+    val    = str(value).ljust(max_len)[:max_len]
     for i, ch in enumerate(val):
-        if not ch.strip():
-            continue
-        cx   = i * cell_w + (cell_w - fs * 0.6) / 2.0
-        safe = ch.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        if not ch.strip(): continue
+        cx = i * cell_w + (cell_w - fs * 0.6) / 2.0
         lines.append(f"1 0 0 1 {cx:.2f} {base:.2f} Tm")
+        safe = ch.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
         lines.append(f"({safe}) Tj")
-
     lines += ["ET", "Q"]
     return "\n".join(lines).encode()
 
 def _build_multiline_ap(value: str, rect: tuple) -> bytes:
-    """
-    Build an appearance stream for a multiline text field with auto-scaling font.
-    A clipping path is set to the field bounds so text never bleeds into adjacent fields.
-    """
     x1, y1, x2, y2 = rect
     w, h = x2 - x1, y2 - y1
-    PAD_TOP = 2.0; PAD_BOT = 9.0; LG = 1.3; MAX_FS = 9.0; MIN_FS = 6.0; CPP = 0.52
+    PAD = 2.0; LG = 1.3; MAX_FS = 8.0; MIN_FS = 5.0; CPP = 0.52
 
     def wrap(text, fs):
         mc = max(1, int(w / (fs * CPP)))
@@ -343,63 +339,75 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     fs = MAX_FS
     while fs >= MIN_FS:
         lines = wrap(value, fs)
-        if len(lines) * fs * LG + PAD_TOP + PAD_BOT <= h:
-            break
+        if len(lines) * fs * LG + PAD * 2 <= h: break
         fs -= 0.5
     fs    = max(fs, MIN_FS)
     lines = wrap(value, fs)
     lh    = fs * LG
-    # Anchor from bottom: last line sits at PAD_BOT, stack upward.
-    # This guarantees the last line never touches the field bottom border.
-    n     = len(lines)
-    # Anchor from bottom: guarantees last line always clears PAD_BOT.
-    # The clip rectangle handles any overflow at the top.
-    sy    = PAD_BOT + (n - 1) * lh + fs
-    # Clip to field bounds — prevents text bleeding into adjacent fields
-    parts = [
-        "q",
-        f"0 0 {w:.2f} {h:.2f} re W n",   # clipping rectangle = field BBox
-        "BT", f"/Helv {fs:.1f} Tf", "0 0 0 rg",
-    ]
-    usable_w = w - 4.0  # 2pt left + 2pt right margin
+    sy    = h - PAD - fs
+    parts = ["q", "BT", f"/Helv {fs:.1f} Tf", "0 0 0 rg"]
     for i, line in enumerate(lines):
         yp = sy - i * lh
-        if yp < PAD_BOT:
-            break
+        if yp < PAD: break
         safe = line.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
-        # Last line: left-align (Tw=0). All others: justify by spreading word gaps.
-        is_last = (i == len(lines) - 1) or (sy - (i+1)*lh < PAD_BOT)
-        if not is_last:
-            words = line.split(" ")
-            gaps  = len(words) - 1
-            if gaps > 0:
-                line_w = len(line) * fs * 0.52
-                tw     = min(max((usable_w - line_w) / gaps, 0), 4.0)
-            else:
-                tw = 0.0
-        else:
-            tw = 0.0
-        parts.append(f"{tw:.3f} Tw")
-        parts.append(f"2.0 {yp:.2f} Td" if i == 0 else f"0 {-lh:.2f} Td")
+        parts.append(f"{PAD:.1f} {yp:.2f} Td" if i == 0 else f"0 {-lh:.2f} Td")
         parts.append(f"({safe}) Tj")
-    parts += ["0 Tw", "ET", "Q"]
+    parts += ["ET", "Q"]
     return "\n".join(parts).encode()
+
+def flatten_pdf(pdf_bytes: bytes) -> bytes:
+    """
+    Flatten a filled PDF — converts all form fields to static content.
+    Result is non-editable and renders correctly in all viewers.
+    Uses pypdf to set the NeedAppearances flag and flatten annotations.
+    """
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    writer.append(reader)
+
+    # Set NeedAppearances to false — forces viewers to use existing AP streams
+    if writer._root_object.get("/AcroForm"):
+        writer._root_object["/AcroForm"].update({
+            NameObject("/NeedAppearances"): False,
+        })
+
+    # Flatten each annotation — move appearance stream content to page
+    # and remove the widget annotation so fields are no longer interactive
+    for page in writer.pages:
+        if "/Annots" not in page:
+            continue
+        annots_to_keep = []
+        for ref in page["/Annots"]:
+            try:
+                annot = ref.get_object()
+            except Exception:
+                continue
+            if annot is None or not hasattr(annot, "get"):
+                continue
+            # Keep non-widget annotations (links, comments etc)
+            if annot.get("/Subtype") != "/Widget":
+                annots_to_keep.append(ref)
+                continue
+            # For widget annotations — just drop them (field becomes static
+            # because the appearance stream was already rendered into the page
+            # content by update_page_form_field_values + our custom AP streams)
+
+        if annots_to_keep:
+            page[NameObject("/Annots")] = annots_to_keep
+        elif "/Annots" in page:
+            del page["/Annots"]
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
 
 def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
     reader = PdfReader(io.BytesIO(template_bytes))
     writer = PdfWriter()
     writer.append(reader)
-
     for page in writer.pages:
         writer.update_page_form_field_values(page, fv, auto_regenerate=False)
-
-    # Set NeedAppearances=True — tells PDF viewers to render fields using
-    # their /DA (default appearance) natively. This gives correct font size
-    # and proper text wrapping for multiline fields without custom AP streams.
-    if "/AcroForm" in writer._root_object:
-        writer._root_object["/AcroForm"].update({
-            NameObject("/NeedAppearances"): BooleanObject(False),
-        })
 
     for page in writer.pages:
         for ref in page.get("/Annots", []):
@@ -407,25 +415,19 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
                 annot = ref.get_object()
             except Exception:
                 continue
-            if annot is None or not hasattr(annot, "get"):
-                continue
-            if annot.get("/Subtype") != "/Widget":
-                continue
+            if annot is None or not hasattr(annot, "get"): continue
+            if annot.get("/Subtype") != "/Widget": continue
             fname = str(annot.get("/T", ""))
             value = fv.get(fname, "")
             rect  = tuple(float(v) for v in annot.get("/Rect", [0,0,0,0]))
             ap_bytes = None
-
             if fname in COMB_FIELDS:
                 if value:
                     ap_bytes = _build_comb_ap(value, COMB_FIELDS[fname], rect)
             elif annot.get("/Ff") and bool(int(annot["/Ff"]) & (1 << 12)):
                 if value:
                     ap_bytes = _build_multiline_ap(value, rect)
-
-            if ap_bytes is None:
-                continue
-
+            if ap_bytes is None: continue
             stream = DecodedStreamObject()
             stream.set_data(ap_bytes)
             stream.update({
@@ -458,197 +460,8 @@ def save_jobs(jobs: list):
 def log_job(job: dict):
     jobs = load_jobs()
     jobs.insert(0, job)
+    # Keep last 500 jobs only
     save_jobs(jobs[:500])
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DATASHEET PDF GENERATOR  (reportlab)
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Ordered sections: (section_title, [list of field label keys])
-DATASHEET_SECTIONS = [
-    ("Candidate", [
-        "Candidate Name as per ID Proof",
-        "TWI Candidate Number",
-        "Date of Birth",
-        "Application Type",
-    ]),
-    ("Course / Event", [
-        "Course Name",
-        "Batch Date",
-    ]),
-    ("Contact", [
-        "Contact No",
-        "Emergency Contact",
-        "Email",
-    ]),
-    ("Permanent Address", [
-        "Address",
-        "City",
-        "District",
-        "Pincode",
-    ]),
-    ("Correspondence Address", [
-        "Correspondence Address 1",
-        "Correspondence Address 2",
-        "Correspondence Address 3",
-        "Correspondence Address 4",
-    ]),
-    ("Invoice Address", [
-        "Invoice Address 1",
-        "Invoice Address 2",
-        "Invoice Address 3",
-        "Invoice Address 4",
-    ]),
-    ("Sponsoring Company", [
-        "Sponsoring Address 1",
-        "Sponsoring Address 2",
-        "Sponsoring Address 3",
-        "Sponsoring Pincode",
-        "Approving Manager",
-        "Company Order No",
-        "Contact Name",
-        "Contact Telephone",
-        "Contact Email",
-    ]),
-    ("Qualifications", [
-        "PCN or BGAS Approval Number",
-        "Current CSWIP Qualifications",
-    ]),
-    ("Experience", [
-        "Section 2 - Detailed Statement",
-        "Section 5 - Detailed Statement",
-    ]),
-    ("Verifier", [
-        "Verifier Name",
-        "Verifier Company Name",
-        "Verifier Designation",
-        "Verifier Professional Relation",
-        "Verifier Phone",
-        "Verifier Email",
-        "Verified Date",
-    ]),
-]
-
-
-def build_datasheet_pdf(record_data: dict, candidate_name: str) -> bytes:
-    """
-    Generate a single-page A4 data verification sheet using reportlab.
-    - Skips blank fields to save space
-    - fs=7, tight padding to fit all data on one page
-    - Falls back gracefully to 2 pages only if experience fields are very long
-    """
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib import colors
-    from reportlab.lib.units import mm
-    from reportlab.platypus import (
-        SimpleDocTemplate, Table, TableStyle, Paragraph,
-        Spacer, HRFlowable,
-    )
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_CENTER
-
-    buf = io.BytesIO()
-
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=A4,
-        leftMargin=10*mm, rightMargin=10*mm,
-        topMargin=10*mm,  bottomMargin=10*mm,
-    )
-
-    W = A4[0] - 20*mm   # usable width
-
-    FS        = 7          # base font size
-    LEADING   = 9          # line height
-    PAD_V     = 1          # top/bottom cell padding (tight — fits single page)
-    PAD_L     = 3          # left cell padding
-    THIN      = 0.5
-    COL_LABEL = W * 0.36
-    COL_VALUE = W * 0.64
-
-    title_style = ParagraphStyle(
-        "ds_title", fontSize=10, fontName="Helvetica-Bold",
-        alignment=TA_CENTER, spaceAfter=0.5*mm,
-    )
-    sub_style = ParagraphStyle(
-        "ds_sub", fontSize=7, fontName="Helvetica",
-        alignment=TA_CENTER, spaceAfter=1*mm, textColor=colors.grey,
-    )
-    label_style = ParagraphStyle(
-        "ds_label", fontSize=FS, fontName="Helvetica-Bold",
-        leading=LEADING, wordWrap="CJK",
-    )
-    value_style = ParagraphStyle(
-        "ds_value", fontSize=FS, fontName="Helvetica",
-        leading=LEADING, wordWrap="CJK",
-    )
-    section_style = ParagraphStyle(
-        "ds_section", fontSize=7, fontName="Helvetica-Bold",
-    )
-
-    story = []
-
-    # ── Title block ───────────────────────────────────────────────────────────
-    story.append(Paragraph("TWI Application — Data Verification Sheet", title_style))
-    story.append(Paragraph(
-        f"Candidate: {candidate_name} &nbsp;&nbsp;|&nbsp;&nbsp; "
-        f"Generated: {date.today().strftime('%d/%m/%Y')}",
-        sub_style,
-    ))
-    story.append(HRFlowable(
-        width="100%", thickness=0.75, color=colors.black, spaceAfter=2*mm,
-    ))
-
-    # ── Sections ──────────────────────────────────────────────────────────────
-    for section_title, fields in DATASHEET_SECTIONS:
-        # Only include fields that have a non-empty value
-        rows = []
-        for field_label in fields:
-            raw_val = record_data.get(field_label, "")
-            val = str(raw_val).strip() if raw_val else ""
-            if not val:
-                continue   # skip blank fields — saves space
-            rows.append([
-                Paragraph(field_label, label_style),
-                Paragraph(val,         value_style),
-            ])
-
-        if not rows:
-            continue   # skip entire section if all fields empty
-
-        # Section header
-        sec_table = Table(
-            [[Paragraph(section_title.upper(), section_style), ""]],
-            colWidths=[W, 0],
-        )
-        sec_table.setStyle(TableStyle([
-            ("SPAN",          (0,0), (1,0)),
-            ("BACKGROUND",    (0,0), (-1,-1), colors.HexColor("#eeeeee")),
-            ("BOX",           (0,0), (-1,-1), THIN, colors.black),
-            ("TOPPADDING",    (0,0), (-1,-1), PAD_V),
-            ("BOTTOMPADDING", (0,0), (-1,-1), PAD_V),
-            ("LEFTPADDING",   (0,0), (-1,-1), PAD_L),
-        ]))
-        story.append(sec_table)
-
-        # Data rows
-        data_table = Table(rows, colWidths=[COL_LABEL, COL_VALUE])
-        data_table.setStyle(TableStyle([
-            ("BOX",           (0,0), (-1,-1), THIN, colors.black),
-            ("INNERGRID",     (0,0), (-1,-1), THIN, colors.black),
-            ("VALIGN",        (0,0), (-1,-1), "TOP"),
-            ("TOPPADDING",    (0,0), (-1,-1), PAD_V),
-            ("BOTTOMPADDING", (0,0), (-1,-1), PAD_V),
-            ("LEFTPADDING",   (0,0), (-1,-1), PAD_L),
-            ("RIGHTPADDING",  (0,0), (-1,-1), PAD_L),
-            ("BACKGROUND",    (0,0), (0,-1),  colors.HexColor("#fafafa")),
-        ]))
-        story.append(data_table)
-        story.append(Spacer(1, 1*mm))
-
-    doc.build(story)
-    return buf.getvalue()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ROUTES
@@ -663,19 +476,20 @@ async def generate(request: Request):
     {
         "record_data": {
             "Candidate Name as per ID Proof": "John Smith",
-            "Date of Birth":                  "2026-03-05",
+            "Date of Birth":                  "15/06/1988",
             "Course Name":                    "CSWIP 3.1",
             ...all CRM field values...
         },
-        "record_id":  "738XXXXXXXXXX",
-        "filename":   "TWI_JohnSmith.pdf"  // optional
+        "record_id":  "738XXXXXXXXXX",   // used for logging only
+        "filename":   "TWI_JohnSmith.pdf" // optional
     }
 
     Returns:
     {
         "ok":         true,
         "job_id":     "uuid",
-        "filename":   "TWI_JohnSmith.pdf"
+        "filename":   "TWI_JohnSmith.pdf",
+        "pdf_base64": "JVBERi0x..."    // Deluge uses this to attach
     }
     """
     body        = await request.json()
@@ -688,6 +502,7 @@ async def generate(request: Request):
     if not PDF_TEMPLATE_PATH.exists():
         raise HTTPException(500, "PDF template not found on server")
 
+    # Candidate name for filename
     cname = ""
     for k in ("Candidate Name as per ID Proof", "Full_Name",
               "Last_Name", "Name", "name"):
@@ -702,7 +517,7 @@ async def generate(request: Request):
         mapped     = apply_mappings(record_data)
         fv         = build_field_values(mapped)
         pdf_bytes  = fill_pdf(template, fv)
-
+        # Delete previous PDF for this record (keep only latest)
         if record_id != "unknown":
             for old_job in load_jobs():
                 if old_job.get("record_id") == record_id:
@@ -710,6 +525,7 @@ async def generate(request: Request):
                     if old_pdf.exists():
                         old_pdf.unlink()
 
+        # Save PDF — valid for 7 days or until next generation
         (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
 
         log_job({
@@ -723,8 +539,8 @@ async def generate(request: Request):
         })
 
         return JSONResponse({
-            "ok":       True,
-            "job_id":   job_id,
+            "ok":      True,
+            "job_id":  job_id,
             "filename": filename,
         })
 
@@ -740,75 +556,13 @@ async def generate(request: Request):
         })
         raise HTTPException(500, str(ex))
 
-
-@app.post("/datasheet")
-async def datasheet(request: Request):
-    """
-    Called by Zoho workflow automation on record creation.
-
-    Body (JSON):
-    {
-        "record_data": { "Candidate Name as per ID Proof": "...", ... },
-        "record_id":   "738XXXXXXXXXX",
-        "filename":    "DS_JohnSmith.pdf"   // optional
-    }
-
-    Returns:
-    {
-        "ok":       true,
-        "job_id":   "uuid",
-        "filename": "DS_JohnSmith.pdf"
-    }
-    """
-    body        = await request.json()
-    record_data = body.get("record_data", {})
-    record_id   = body.get("record_id", "unknown")
-    job_id      = str(uuid.uuid4())
-
-    if not record_data:
-        raise HTTPException(400, "record_data is required")
-
-    cname = str(record_data.get("Candidate Name as per ID Proof", "Candidate")).strip()
-    safe_name = cname.replace(" ", "_")
-    filename  = body.get("filename") or f"DS_{safe_name}_{datetime.now().strftime('%Y%m%d')}.pdf"
-
-    try:
-        pdf_bytes = build_datasheet_pdf(record_data, cname)
-        (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
-
-        log_job({
-            "id":         job_id,
-            "record_id":  record_id,
-            "candidate":  cname,
-            "filename":   filename,
-            "status":     "Done",
-            "created_at": datetime.now().isoformat(),
-            "error":      None,
-        })
-
-        return JSONResponse({
-            "ok":       True,
-            "job_id":   job_id,
-            "filename": filename,
-        })
-
-    except Exception as ex:
-        log_job({
-            "id":         job_id,
-            "record_id":  record_id,
-            "candidate":  cname,
-            "filename":   filename,
-            "status":     "Error",
-            "created_at": datetime.now().isoformat(),
-            "error":      str(ex),
-        })
-        raise HTTPException(500, str(ex))
 
 @app.get("/pdf/{job_id}", response_class=Response)
 async def download_pdf(job_id: str):
     pdf_path = PDF_STORE / f"{job_id}.pdf"
     if not pdf_path.exists():
         raise HTTPException(404, detail="PDF not found or expired. Please regenerate from CRM.")
+    # Check 7-day expiry
     age_days = (datetime.now().timestamp() - pdf_path.stat().st_mtime) / 86400
     if age_days > 7:
         pdf_path.unlink()
@@ -823,9 +577,16 @@ async def download_pdf(job_id: str):
                  "Cache-Control": "no-cache"},
     )
 
+
+
+
 @app.get("/workdrive/{job_id}")
-async def get_workdrive_id(job_id: str, request: Request):
-    import urllib.request as _ur
+async def get_workdrive_id(job_id: str):
+    """
+    Upload the generated PDF to Zoho WorkDrive and return the file ID.
+    Deluge calls this after /generate, then uses the file ID to attach to CRM.
+    """
+    import urllib.request as _ur, urllib.parse as _up
 
     pdf_path = PDF_STORE / f"{job_id}.pdf"
     if not pdf_path.exists():
@@ -836,10 +597,15 @@ async def get_workdrive_id(job_id: str, request: Request):
     filename = job.get("filename", f"TWI_{job_id[:6]}.pdf")
 
     WORKDRIVE_FOLDER = "j85fx89434c9ab31f481f95184423fc50d761"
+
+    # Token comes from the Authorization header — set by Deluge connection
     auth_header      = request.headers.get("Authorization", "")
     WORKDRIVE_TOKEN  = auth_header.replace("Zoho-oauthtoken ", "").strip()
+
     if not WORKDRIVE_TOKEN:
+        # Fallback to env var if set
         WORKDRIVE_TOKEN = os.environ.get("WORKDRIVE_TOKEN", "")
+
     if not WORKDRIVE_TOKEN:
         raise HTTPException(500, "No WorkDrive token — set WORKDRIVE_TOKEN env var in Render")
 
@@ -859,13 +625,17 @@ async def get_workdrive_id(job_id: str, request: Request):
     with _ur.urlopen(req, timeout=30) as r:
         resp = json.loads(r.read())
 
+    # WorkDrive returns file ID in data[0].id
     try:
         file_id = resp["data"][0]["id"]
     except (KeyError, IndexError):
         raise HTTPException(500, f"WorkDrive upload failed: {resp}")
 
-    return JSONResponse({"ok": True, "file_id": file_id, "filename": filename})
-
+    return JSONResponse({
+        "ok":       True,
+        "file_id":  file_id,
+        "filename": filename,
+    })
 @app.get("/health")
 async def health():
     return JSONResponse({
@@ -875,22 +645,6 @@ async def health():
         "jobs":     len(load_jobs()),
     })
 
-@app.get("/fields")
-async def list_fields():
-    """
-    Lists all PDF form field names, types, and properties.
-    Use this to verify that COMB_FIELDS, AUTO_MAP_RULES, and checkbox
-    names in build_field_values() match the actual PDF.
-    """
-    fields = get_pdf_fields()
-    return JSONResponse({
-        "total": len(fields),
-        "text_fields":     sorted([k for k,v in fields.items() if v["type"] == "/Tx"]),
-        "button_fields":   sorted([k for k,v in fields.items() if v["type"] == "/Btn"]),
-        "comb_fields":     sorted([k for k,v in fields.items() if v["comb"]]),
-        "multiline_fields": sorted([k for k,v in fields.items() if v["multiline"]]),
-        "all": {k: v for k, v in sorted(fields.items())},
-    })
 
 @app.get("/queue", response_class=HTMLResponse)
 async def queue_page(auth: str = Depends(require_auth)):
@@ -947,11 +701,13 @@ tr:hover td{{background:#f8fafc}}
 {rows if jobs else '<tr><td colspan="6" class="empty">No jobs yet — click Generate TWI PDF inside a CRM record.</td></tr>'}
 </tbody></table></body></html>""")
 
+
 @app.get("/", response_class=HTMLResponse)
 async def root(auth: str = Depends(require_auth)):
-    tmpl_ok    = PDF_TEMPLATE_PATH.exists()
-    fields     = len(get_pdf_fields())
-    jobs       = len(load_jobs())
+    """Root page — links to all endpoints."""
+    tmpl_ok = PDF_TEMPLATE_PATH.exists()
+    fields  = len(get_pdf_fields())
+    jobs    = len(load_jobs())
     tmpl_color = "#10b981" if tmpl_ok else "#ef4444"
     tmpl_text  = f"Found ({fields} fields scanned)" if tmpl_ok else "MISSING — see /debug"
     return HTMLResponse(f"""<!DOCTYPE html>
@@ -977,6 +733,7 @@ a.btn.grey{{background:#e2e8f0;color:#475569}}
 </style></head><body>
 <h1>📋 TWI PDF Rendering Engine</h1>
 <p class="sub">Blastline Institute — TWI Enrolment Form Filler</p>
+
 <div class="card">
   <h2>Status</h2>
   <div class="row"><span>PDF Template</span>
@@ -986,28 +743,41 @@ a.btn.grey{{background:#e2e8f0;color:#475569}}
   <div class="row"><span>Server</span>
     <span class="val ok">Running ✓</span></div>
 </div>
+
 <div class="card">
   <h2>Endpoints</h2>
   <a class="btn" href="/queue">📋 PDF Queue</a>
-  <a class="btn grey" href="/fields">Fields JSON</a>
   <a class="btn grey" href="/health">Health JSON</a>
   <a class="btn grey" href="/debug">Debug Paths</a>
   <a class="btn grey" href="/docs">API Docs</a>
 </div>
 </body></html>""")
 
+
 @app.get("/debug")
 async def debug():
+    """Shows server file paths — useful for diagnosing template location issues."""
     import sys
-    cwd = os.getcwd()
-    try: app_files  = [f.name for f in _APP_DIR.iterdir()]
-    except Exception as e: app_files = [str(e)]
-    try: data_files = [f.name for f in DATA_DIR.iterdir()]
-    except Exception as e: data_files = [str(e)]
+    cwd      = os.getcwd()
+    app_dir  = str(_APP_DIR)
+    data_dir = str(DATA_DIR)
+
+    # List files in app dir
+    try:
+        app_files = [f.name for f in _APP_DIR.iterdir()]
+    except Exception as e:
+        app_files = [str(e)]
+
+    # List files in data dir
+    try:
+        data_files = [f.name for f in DATA_DIR.iterdir()]
+    except Exception as e:
+        data_files = [str(e)]
+
     return JSONResponse({
         "cwd":              cwd,
-        "app_dir":          str(_APP_DIR),
-        "data_dir":         str(DATA_DIR),
+        "app_dir":          app_dir,
+        "data_dir":         data_dir,
         "template_path":    str(PDF_TEMPLATE_PATH),
         "template_exists":  PDF_TEMPLATE_PATH.exists(),
         "app_dir_files":    sorted(app_files),
@@ -1016,14 +786,22 @@ async def debug():
         "env_DATA_DIR":     os.environ.get("DATA_DIR", "not set"),
     })
 
+
 @app.post("/upload-template")
 async def upload_template(request: Request):
+    """
+    Upload the PDF template directly to the server.
+    Use this if the PDF is not in your GitHub repo.
+
+    POST with Content-Type: application/pdf
+    Body: raw PDF bytes
+    """
     pdf_bytes = await request.body()
     if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
         raise HTTPException(400, "Invalid PDF — body must be raw PDF bytes")
     PDF_TEMPLATE_PATH.write_bytes(pdf_bytes)
     global _pdf_fields_cache
-    _pdf_fields_cache = {}
+    _pdf_fields_cache = {}          # force re-scan
     fields = len(get_pdf_fields())
     return JSONResponse({
         "ok":      True,
