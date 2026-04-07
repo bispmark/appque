@@ -260,8 +260,13 @@ def build_field_values(mapped: dict) -> dict:
     pdf_text   = {k for k,v in pdf_fields.items() if v["type"] == "/Tx"}
 
     # All checkboxes left blank for candidate to complete on printed form
-    fv = {k: str(v) for k, v in mapped.items()
-          if k in pdf_text and v is not None}
+    # TWI form requires CAPITAL LETTERS throughout — except email and date fields
+    NO_CAPS = {"Email", "Email_2", "Email Address", "Date", "Event date"}
+    fv = {
+        k: (str(v) if k in NO_CAPS else str(v).upper())
+        for k, v in mapped.items()
+        if k in pdf_text and v is not None
+    }
 
     if not fv.get("Date"):
         fv["Date"] = date.today().strftime("%d/%m/%Y")
