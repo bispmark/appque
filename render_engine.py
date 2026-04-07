@@ -485,122 +485,98 @@ DATASHEET_FIELDS = [
 
 
 def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
-    BRAND      = colors.HexColor("#1e3a5f")
-    BRAND_LITE = colors.HexColor("#e8f0fb")
-    GREY_TXT   = colors.HexColor("#6b7280")
-    ROW_ALT    = colors.HexColor("#f7f9fc")
-
+    """
+    Plain A4 two-column table — Field Label | Value, row by row.
+    No branding, no graphics. Fits on a single page.
+    """
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
-        leftMargin=18*mm, rightMargin=18*mm,
-        topMargin=14*mm,  bottomMargin=14*mm,
+        leftMargin=15*mm, rightMargin=15*mm,
+        topMargin=12*mm,  bottomMargin=12*mm,
     )
 
-    sty_title   = ParagraphStyle("title",   fontSize=15, fontName="Helvetica-Bold",
-                                 textColor=colors.white, alignment=TA_LEFT)
-    sty_sub     = ParagraphStyle("sub",     fontSize=9,  fontName="Helvetica",
-                                 textColor=colors.white, alignment=TA_RIGHT)
-    sty_section = ParagraphStyle("section", fontSize=8.5,fontName="Helvetica-Bold",
-                                 textColor=colors.white, alignment=TA_LEFT, leftIndent=4)
-    sty_label   = ParagraphStyle("label",   fontSize=8,  fontName="Helvetica-Bold",
-                                 textColor=BRAND)
-    sty_value   = ParagraphStyle("value",   fontSize=8.5,fontName="Helvetica",
-                                 textColor=colors.HexColor("#111827"))
-    sty_empty   = ParagraphStyle("empty",   fontSize=8.5,fontName="Helvetica",
-                                 textColor=GREY_TXT)
-    sty_footer  = ParagraphStyle("footer",  fontSize=7,  fontName="Helvetica",
-                                 textColor=GREY_TXT, alignment=TA_CENTER)
+    W = A4[0] - 30*mm
+    THIN = 0.5
+    BLACK = colors.black
+    GREY_BG = colors.HexColor("#f5f5f5")
+
+    sty_title = ParagraphStyle("t", fontSize=11, fontName="Helvetica-Bold",
+                               alignment=TA_CENTER, spaceAfter=1*mm)
+    sty_sub   = ParagraphStyle("s", fontSize=7.5, fontName="Helvetica",
+                               alignment=TA_CENTER, spaceAfter=3*mm,
+                               textColor=colors.HexColor("#555555"))
+    sty_sec   = ParagraphStyle("sec", fontSize=7.5, fontName="Helvetica-Bold")
+    sty_label = ParagraphStyle("l",   fontSize=7.5, fontName="Helvetica-Bold")
+    sty_value = ParagraphStyle("v",   fontSize=7.5, fontName="Helvetica")
+    sty_empty = ParagraphStyle("e",   fontSize=7.5, fontName="Helvetica",
+                               textColor=colors.HexColor("#aaaaaa"))
+
+    COL_LABEL = W * 0.38
+    COL_VALUE = W * 0.62
+    PAD = 3
 
     story = []
-    pw    = A4[0] - 36*mm
 
-    # Header
-    hdr = Table([[
-        Paragraph("Blastline Institute", sty_title),
-        Paragraph("TWI Application Data Sheet", sty_sub),
-    ]], colWidths=[pw*0.55, pw*0.45])
-    hdr.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0),(-1,-1), BRAND),
-        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
-        ("TOPPADDING",    (0,0),(-1,-1), 10),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 10),
-        ("LEFTPADDING",   (0,0),(0,0),   8),
-        ("RIGHTPADDING",  (1,0),(1,0),   8),
-    ]))
-    story.append(hdr)
-
-    today = date.today().strftime("%d-%b-%Y")
+    # Title
     cname = record_data.get("Candidate Name as per ID Proof", "") or record_id
-    meta  = Table([[
-        Paragraph(f"Candidate: <b>{cname}</b>",
-            ParagraphStyle("m1", fontSize=8, fontName="Helvetica",
-                           textColor=BRAND, alignment=TA_LEFT)),
-        Paragraph(f"Generated: <b>{today}</b>  ·  Record: <b>{record_id}</b>",
-            ParagraphStyle("m2", fontSize=7.5, fontName="Helvetica",
-                           textColor=GREY_TXT, alignment=TA_RIGHT)),
-    ]], colWidths=[pw*0.5, pw*0.5])
-    meta.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0),(-1,-1), BRAND_LITE),
-        ("TOPPADDING",    (0,0),(-1,-1), 4),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 4),
-        ("LEFTPADDING",   (0,0),(-1,-1), 6),
-        ("RIGHTPADDING",  (0,0),(-1,-1), 6),
-        ("LINEBELOW",     (0,0),(-1,-1), 0.5, BRAND),
-    ]))
-    story.append(meta)
-    story.append(Spacer(1, 4*mm))
+    story.append(Paragraph("TWI Application — Data Verification Sheet", sty_title))
+    story.append(Paragraph(
+        f"Candidate: {cname}   |   Generated: {date.today().strftime('%d/%m/%Y')}   |   Record: {record_id}",
+        sty_sub,
+    ))
 
+    # Build all rows grouped by section
     sections = OrderedDict()
     for key, label, section in DATASHEET_FIELDS:
         sections.setdefault(section, []).append((key, label))
 
+    table_data = []
+    table_styles = [
+        ("FONTNAME",      (0,0), (-1,-1), "Helvetica"),
+        ("FONTSIZE",      (0,0), (-1,-1), 7.5),
+        ("VALIGN",        (0,0), (-1,-1), "TOP"),
+        ("TOPPADDING",    (0,0), (-1,-1), PAD),
+        ("BOTTOMPADDING", (0,0), (-1,-1), PAD),
+        ("LEFTPADDING",   (0,0), (-1,-1), PAD+1),
+        ("RIGHTPADDING",  (0,0), (-1,-1), PAD),
+        ("LINEBELOW",     (0,0), (-1,-1), 0.3, colors.HexColor("#cccccc")),
+        ("BOX",           (0,0), (-1,-1), THIN, BLACK),
+    ]
+
+    row_idx = 0
     for sec_name, fields in sections.items():
-        sec_tbl = Table([[Paragraph(sec_name.upper(), sty_section)]], colWidths=[pw])
-        sec_tbl.setStyle(TableStyle([
-            ("BACKGROUND",    (0,0),(-1,-1), BRAND),
-            ("TOPPADDING",    (0,0),(-1,-1), 4),
-            ("BOTTOMPADDING", (0,0),(-1,-1), 4),
-            ("LEFTPADDING",   (0,0),(-1,-1), 6),
-        ]))
-        story.append(sec_tbl)
+        # Skip section entirely if all fields empty
+        has_data = any(
+            str(record_data.get(key, "") or "").strip()
+            for key, _ in fields
+        )
+        if not has_data:
+            continue
 
-        row_data = []
-        for i in range(0, len(fields), 2):
-            pair = fields[i:i+2]
-            row  = []
-            for key, label in pair:
-                val = str(record_data.get(key, "") or "").strip()
-                row.append(Paragraph(label, sty_label))
-                row.append(Paragraph(val, sty_value) if val
-                           else Paragraph("—", sty_empty))
-            while len(row) < 4:
-                row.append(Paragraph("", sty_empty))
-            row_data.append(row)
-
-        ts = TableStyle([
-            ("VALIGN",        (0,0),(-1,-1), "TOP"),
-            ("TOPPADDING",    (0,0),(-1,-1), 5),
-            ("BOTTOMPADDING", (0,0),(-1,-1), 5),
-            ("LEFTPADDING",   (0,0),(-1,-1), 5),
-            ("RIGHTPADDING",  (0,0),(-1,-1), 5),
-            ("LINEBELOW",     (0,0),(-1,-1), 0.3, colors.HexColor("#e5e7eb")),
-            ("BOX",           (0,0),(-1,-1), 0.5, colors.HexColor("#d1d5db")),
+        # Section header row — spans full width, grey background
+        table_data.append([
+            Paragraph(sec_name.upper(), sty_sec), ""
         ])
-        for r in range(0, len(row_data), 2):
-            ts.add("BACKGROUND", (0,r),(-1,r), ROW_ALT)
+        table_styles.append(("SPAN",       (0, row_idx), (1, row_idx)))
+        table_styles.append(("BACKGROUND", (0, row_idx), (1, row_idx), GREY_BG))
+        table_styles.append(("FONTNAME",   (0, row_idx), (1, row_idx), "Helvetica-Bold"))
+        row_idx += 1
 
-        tbl = Table(row_data, colWidths=[pw*0.2, pw*0.3, pw*0.2, pw*0.3])
-        tbl.setStyle(ts)
+        for key, label in fields:
+            val = str(record_data.get(key, "") or "").strip()
+            if not val:
+                continue  # skip empty rows
+            table_data.append([
+                Paragraph(label, sty_label),
+                Paragraph(val,   sty_value),
+            ])
+            row_idx += 1
+
+    if table_data:
+        tbl = Table(table_data, colWidths=[COL_LABEL, COL_VALUE])
+        tbl.setStyle(TableStyle(table_styles))
         story.append(tbl)
-        story.append(Spacer(1, 3*mm))
-
-    story.append(HRFlowable(width="100%", thickness=0.5, color=BRAND))
-    story.append(Spacer(1, 2*mm))
-    story.append(Paragraph(
-        "Blastline Institute  ·  Confidential  ·  TWI PDF Engine",
-        sty_footer,
-    ))
 
     doc.build(story)
     buf.seek(0)
