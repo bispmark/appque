@@ -501,20 +501,20 @@ def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
     BLACK = colors.black
     GREY_BG = colors.HexColor("#f5f5f5")
 
-    sty_title = ParagraphStyle("t", fontSize=11, fontName="Helvetica-Bold",
+    sty_title = ParagraphStyle("t", fontSize=13, fontName="Helvetica-Bold",
                                alignment=TA_CENTER, spaceAfter=1*mm)
-    sty_sub   = ParagraphStyle("s", fontSize=7.5, fontName="Helvetica",
+    sty_sub   = ParagraphStyle("s", fontSize=9, fontName="Helvetica",
                                alignment=TA_CENTER, spaceAfter=3*mm,
                                textColor=colors.HexColor("#555555"))
-    sty_sec   = ParagraphStyle("sec", fontSize=7.5, fontName="Helvetica-Bold")
-    sty_label = ParagraphStyle("l",   fontSize=7.5, fontName="Helvetica-Bold")
-    sty_value = ParagraphStyle("v",   fontSize=7.5, fontName="Helvetica")
-    sty_empty = ParagraphStyle("e",   fontSize=7.5, fontName="Helvetica",
+    sty_sec   = ParagraphStyle("sec", fontSize=9, fontName="Helvetica-Bold")
+    sty_label = ParagraphStyle("l",   fontSize=10, fontName="Helvetica-Bold")
+    sty_value = ParagraphStyle("v",   fontSize=10, fontName="Helvetica")
+    sty_empty = ParagraphStyle("e",   fontSize=10, fontName="Helvetica",
                                textColor=colors.HexColor("#aaaaaa"))
 
     COL_LABEL = W * 0.38
     COL_VALUE = W * 0.62
-    PAD = 3
+    PAD = 5
 
     story = []
 
