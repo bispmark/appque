@@ -79,12 +79,10 @@ app.add_middleware(
 # FIELD METADATA
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Comb fields: PDF field name → max character count
 COMB_FIELDS = {"undefined": 6, "D": 2, "M": 2, "Y": 4}
 
 SPECIAL_TOKENS = {"__dob__", "__ignore__"}
 
-# Regex auto-map rules — ORDER MATTERS, first match wins
 AUTO_MAP_RULES = [
     # Event / Course
     (r"batch.?date|exam.?date",                                    "Event date"),
@@ -138,8 +136,18 @@ AUTO_MAP_RULES = [
     (r"verifier.?name",                                            "Name in capitals"),
     (r"verifier.?phone|verifier.?tel",                             "Telephone no"),
     (r"verifier.?email",                                           "Email Address"),
-    # Verifier date → PDF Date field (page 4)
+    # Verifier date
     (r"verified.?date",                                            "Date"),
+    # Datasheet-only fields — not mapped to PDF form fields
+    (r"sslc.?year|sslc",                                           "__ignore__"),
+    (r"degree.?year|diploma.?year",                                "__ignore__"),
+    (r"current.?designation",                                      "__ignore__"),
+    (r"current.?job.?started|job.?started",                        "__ignore__"),
+    (r"total.?years|years.?of.?exp",                               "__ignore__"),
+    (r"^state$",                                                   "__ignore__"),
+    (r"whatsapp",                                                  "__ignore__"),
+    (r"^venue$",                                                   "__ignore__"),
+    (r"cswip.?3.?1.?cert",                                         "__ignore__"),
     # Catch-all
     (r"designation|company.*position",                             "Company  position"),
 ]
@@ -197,13 +205,7 @@ def load_manual_mappings() -> dict:
     return {}
 
 def _split_dob(s: str):
-    """
-    Split a date string into (DD, MM, YYYY).
-    Handles: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS+05:30 (Zoho ISO datetime),
-             DD/MM/YYYY, DD-MM-YYYY, DD-Mon-YYYY, Mon DD YYYY
-    """
     s = str(s).strip()
-    # Strip ISO datetime suffix: "2026-03-05T18:30:00+05:30" → "2026-03-05"
     s = re.sub(r"T\d{2}:\d{2}.*$", "", s).strip()
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y",
                 "%d-%b-%Y", "%b %d, %Y", "%B %d, %Y",
@@ -234,7 +236,6 @@ def apply_mappings(raw: dict) -> dict:
             norm_zk = re.sub(r"[^a-z0-9]", "", zk.lower())
             for pf in pdf_text:
                 norm_pf = re.sub(r"[^a-z0-9]", "", pf.lower())
-                # Guard: skip short field names to prevent false fuzzy matches
                 if norm_zk and norm_pf and len(norm_pf) >= 3 and (norm_zk in norm_pf or norm_pf in norm_zk):
                     matched = pf
                     break
@@ -259,8 +260,6 @@ def build_field_values(mapped: dict) -> dict:
     pdf_fields = get_pdf_fields()
     pdf_text   = {k for k,v in pdf_fields.items() if v["type"] == "/Tx"}
 
-    # All checkboxes left blank for candidate to complete on printed form
-    # TWI form requires CAPITAL LETTERS throughout — except email and date fields
     NO_CAPS = {"Email", "Email_2", "Email Address", "Date", "Event date"}
     fv = {
         k: (str(v) if k in NO_CAPS else str(v).upper())
@@ -278,14 +277,10 @@ def build_field_values(mapped: dict) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_comb_ap(value: str, max_len: int, rect: tuple, fs: float = 8.0) -> bytes:
-    """
-    Custom AP stream for comb (segmented) text fields.
-    BT must come BEFORE Tf — placing Tf outside BT corrupts font in some viewers.
-    """
     x1, y1, x2, y2 = rect
     cell_w = (x2 - x1) / max_len
     base   = (y2 - y1 - fs) / 2.0 + 1.0
-    lines  = ["q", "BT", f"/Cour {fs} Tf", "0 0 0 rg"]   # BT before Tf ← critical
+    lines  = ["q", "BT", f"/Cour {fs} Tf", "0 0 0 rg"]
     val    = str(value).ljust(max_len)[:max_len]
     for i, ch in enumerate(val):
         if not ch.strip(): continue
@@ -297,13 +292,6 @@ def _build_comb_ap(value: str, max_len: int, rect: tuple, fs: float = 8.0) -> by
     return "\n".join(lines).encode()
 
 def _build_multiline_ap(value: str, rect: tuple) -> bytes:
-    """
-    Custom AP stream for multiline text fields.
-    - Bottom-up anchoring: last line always clears PAD_BOT from border
-    - Clipping path prevents text bleeding into adjacent fields
-    - Justified text on full lines, last line left-aligned
-    - MAX_FS=9 matches PDF native /DA font size
-    """
     x1, y1, x2, y2 = rect
     w, h = x2 - x1, y2 - y1
     PAD_TOP = 2.0; PAD_BOT = 9.0; LG = 1.3
@@ -326,13 +314,12 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     lines = wrap(value, fs)
     lh    = fs * LG
     n     = len(lines)
-    # Anchor from bottom: last line sits at PAD_BOT, stack upward
     sy    = PAD_BOT + (n - 1) * lh + fs
 
-    usable_w = w - 4.0  # 2pt left + 2pt right margin
+    usable_w = w - 4.0
     parts = [
         "q",
-        f"0 0 {w:.2f} {h:.2f} re W n",   # clip to field bounds
+        f"0 0 {w:.2f} {h:.2f} re W n",
         "BT", f"/Helv {fs:.1f} Tf", "0 0 0 rg",
     ]
     for i, line in enumerate(lines):
@@ -340,7 +327,6 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
         if yp < PAD_BOT:
             break
         safe = line.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
-        # Justify all lines except last; last line left-aligned
         is_last = (i == len(lines) - 1) or (sy - (i+1)*lh < PAD_BOT)
         if not is_last:
             words = line.split(" ")
@@ -363,7 +349,6 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
     for page in writer.pages:
         writer.update_page_form_field_values(page, fv, auto_regenerate=False)
 
-    # NeedAppearances=False — use our custom AP streams
     if "/AcroForm" in writer._root_object:
         writer._root_object["/AcroForm"].update({
             NameObject("/NeedAppearances"): BooleanObject(False),
@@ -437,25 +422,31 @@ DATASHEET_FIELDS = [
     ("TWI Candidate Number",          "TWI Candidate Number",          "Event & Examination"),
     ("Course Name",                   "Course Name",                   "Event & Examination"),
     ("Batch Date",                    "Exam Date",                     "Event & Examination"),
+    ("Venue",                         "Venue",                         "Event & Examination"),
     ("Application Type",              "Application Type",              "Event & Examination"),
     ("PCN or BGAS Approval Number",   "BGAS / PCN Cert No",            "Event & Examination"),
+    ("CSWIP 3.1 Cert No",             "CSWIP 3.1 Cert No",             "Event & Examination"),
     ("Current CSWIP Qualifications",  "Current CSWIP Qualifications",  "Event & Examination"),
-    # Candidate
+    # Candidate Details
     ("Candidate Name as per ID Proof","Candidate Name (as per ID)",    "Candidate Details"),
     ("Date of Birth",                 "Date of Birth",                 "Candidate Details"),
     ("Contact No",                    "Mobile / Contact No",           "Candidate Details"),
+    ("WhatsApp Phone",                "WhatsApp Phone",                "Candidate Details"),
     ("Emergency Contact",             "Emergency Contact",             "Candidate Details"),
     ("Email",                         "Email",                         "Candidate Details"),
     ("Address",                       "Address Line 1",                "Candidate Details"),
     ("City",                          "City",                          "Candidate Details"),
     ("District",                      "District",                      "Candidate Details"),
+    ("State",                         "State",                         "Candidate Details"),
     ("Pincode",                       "Pincode",                       "Candidate Details"),
-    # Correspondence
+    ("Current Designation",           "Current Designation",           "Candidate Details"),
+    ("Current Job Started Year",      "Current Job Started Year",      "Candidate Details"),
+    # Correspondence Address
     ("Correspondence Address 1",      "Correspondence Addr 1",         "Correspondence Address"),
     ("Correspondence Address 2",      "Correspondence Addr 2",         "Correspondence Address"),
     ("Correspondence Address 3",      "Correspondence Addr 3",         "Correspondence Address"),
     ("Correspondence Address 4",      "Correspondence Addr 4",         "Correspondence Address"),
-    # Invoice
+    # Invoice Address
     ("Invoice Address 1",             "Invoice Addr 1",                "Invoice Address"),
     ("Invoice Address 2",             "Invoice Addr 2",                "Invoice Address"),
     ("Invoice Address 3",             "Invoice Addr 3",                "Invoice Address"),
@@ -471,9 +462,10 @@ DATASHEET_FIELDS = [
     ("Contact Telephone",             "Contact Telephone",             "Sponsoring Company"),
     ("Contact Email",                 "Contact Email",                 "Sponsoring Company"),
     # Experience
+    ("Total Years of Experience",     "Total Years of Experience",     "Experience"),
     ("Section 2 - Detailed Statement","Section 2 — Detailed Statement","Experience"),
     ("Section 5 - Detailed Statement","Section 5 — Detailed Statement","Experience"),
-    # Verifier
+    # Verifier Details
     ("Verifier Name",                 "Verifier Name",                 "Verifier Details"),
     ("Verifier Company Name",         "Verifier Company",              "Verifier Details"),
     ("Verifier Designation",          "Verifier Designation",          "Verifier Details"),
@@ -481,13 +473,16 @@ DATASHEET_FIELDS = [
     ("Verifier Phone",                "Verifier Phone",                "Verifier Details"),
     ("Verifier Email",                "Verifier Email",                "Verifier Details"),
     ("Verified Date",                 "Verified Date",                 "Verifier Details"),
+    # Education
+    ("SSLC Year",                     "SSLC Year",                     "Education"),
+    ("Degree / Diploma Year",         "Degree / Diploma Year",         "Education"),
 ]
 
 
 def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
     """
     Plain A4 two-column table — Field Label | Value, row by row.
-    No branding, no graphics. Fits on a single page.
+    Sections with no data are skipped automatically.
     """
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -506,11 +501,9 @@ def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
     sty_sub   = ParagraphStyle("s", fontSize=9, fontName="Helvetica",
                                alignment=TA_CENTER, spaceAfter=3*mm,
                                textColor=colors.HexColor("#555555"))
-    sty_sec   = ParagraphStyle("sec", fontSize=9, fontName="Helvetica-Bold")
+    sty_sec   = ParagraphStyle("sec", fontSize=9,  fontName="Helvetica-Bold")
     sty_label = ParagraphStyle("l",   fontSize=10, fontName="Helvetica-Bold")
     sty_value = ParagraphStyle("v",   fontSize=10, fontName="Helvetica")
-    sty_empty = ParagraphStyle("e",   fontSize=10, fontName="Helvetica",
-                               textColor=colors.HexColor("#aaaaaa"))
 
     COL_LABEL = W * 0.38
     COL_VALUE = W * 0.62
@@ -518,7 +511,6 @@ def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
 
     story = []
 
-    # Title
     cname = record_data.get("Candidate Name as per ID Proof", "") or record_id
     story.append(Paragraph("TWI Application — Data Verification Sheet", sty_title))
     story.append(Paragraph(
@@ -526,7 +518,6 @@ def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
         sty_sub,
     ))
 
-    # Build all rows grouped by section
     sections = OrderedDict()
     for key, label, section in DATASHEET_FIELDS:
         sections.setdefault(section, []).append((key, label))
@@ -534,7 +525,7 @@ def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
     table_data = []
     table_styles = [
         ("FONTNAME",      (0,0), (-1,-1), "Helvetica"),
-        ("FONTSIZE",      (0,0), (-1,-1), 7.5),
+        ("FONTSIZE",      (0,0), (-1,-1), 10),
         ("VALIGN",        (0,0), (-1,-1), "TOP"),
         ("TOPPADDING",    (0,0), (-1,-1), PAD),
         ("BOTTOMPADDING", (0,0), (-1,-1), PAD),
@@ -546,7 +537,6 @@ def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
 
     row_idx = 0
     for sec_name, fields in sections.items():
-        # Skip section entirely if all fields empty
         has_data = any(
             str(record_data.get(key, "") or "").strip()
             for key, _ in fields
@@ -554,10 +544,7 @@ def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
         if not has_data:
             continue
 
-        # Section header row — spans full width, grey background
-        table_data.append([
-            Paragraph(sec_name.upper(), sty_sec), ""
-        ])
+        table_data.append([Paragraph(sec_name.upper(), sty_sec), ""])
         table_styles.append(("SPAN",       (0, row_idx), (1, row_idx)))
         table_styles.append(("BACKGROUND", (0, row_idx), (1, row_idx), GREY_BG))
         table_styles.append(("FONTNAME",   (0, row_idx), (1, row_idx), "Helvetica-Bold"))
@@ -566,7 +553,7 @@ def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
         for key, label in fields:
             val = str(record_data.get(key, "") or "").strip()
             if not val:
-                continue  # skip empty rows
+                continue
             table_data.append([
                 Paragraph(label, sty_label),
                 Paragraph(val,   sty_value),
@@ -697,7 +684,6 @@ async def download_pdf(job_id: str):
 
 @app.get("/fields")
 async def list_fields():
-    """Lists all PDF form field names — use to verify mappings."""
     fields = get_pdf_fields()
     return JSONResponse({
         "total":            len(fields),
@@ -823,36 +809,32 @@ a.btn.grey{{background:#e2e8f0;color:#475569}}
 </div></body></html>""")
 
 
-
 @app.get("/mappings", response_class=HTMLResponse)
 async def mappings_page(auth: str = Depends(require_auth)):
-    """
-    Visual mapping editor — shows every Deluge key → PDF field assignment.
-    Manual overrides are saved to manual_mappings.json and take priority
-    over AUTO_MAP_RULES regex matching.
-    """
     pdf_fields  = get_pdf_fields()
     pdf_options = sorted([k for k,v in pdf_fields.items() if v["type"] == "/Tx"])
     manual      = load_manual_mappings()
 
-    # Build current effective mapping by running AUTO_MAP_RULES against
-    # all known Deluge keys
     KNOWN_DELUGE_KEYS = [
         "Candidate Name as per ID Proof", "TWI Candidate Number", "Date of Birth",
-        "Email", "Contact No", "Emergency Contact",
-        "Address", "City", "District", "Pincode",
-        "Correspondence address 1", "Correspondence address 2",
-        "Correspondence address 3", "Correspondence address 4",
+        "Application Type",
+        "Email", "Contact No", "Emergency Contact", "WhatsApp Phone",
+        "Address", "City", "District", "State", "Pincode",
+        "Current Designation", "Current Job Started Year",
+        "Correspondence Address 1", "Correspondence Address 2",
+        "Correspondence Address 3", "Correspondence Address 4",
         "Invoice Address 1", "Invoice Address 2", "Invoice Address 3", "Invoice Address 4",
-        "Course Name", "Batch Date",
-        "PCN or BGAS Approval Number", "Current CSWIP Qualifications",
+        "Course Name", "Batch Date", "Venue",
+        "PCN or BGAS Approval Number", "CSWIP 3.1 Cert No", "Current CSWIP Qualifications",
         "Sponsoring Address 1", "Sponsoring Address 2", "Sponsoring Address 3",
-        "Sponsoring Pincode", "Approving Manager", "Company order No",
+        "Sponsoring Pincode", "Approving Manager", "Company Order No",
         "Contact Name", "Contact Telephone", "Contact Email",
-        "Duties & Responsibilities", "Section 5 Detailed Statement",
+        "Total Years of Experience",
+        "Section 2 - Detailed Statement", "Section 5 - Detailed Statement",
         "Verifier Name", "Verifier Phone", "Verifier Email",
-        "Verifier Professional Relation", "Verifier Company Position",
-        "Verified Date",
+        "Verifier Company Name", "Verifier Designation",
+        "Verifier Professional Relation", "Verified Date",
+        "SSLC Year", "Degree / Diploma Year",
     ]
 
     def auto_match(zk):
@@ -868,18 +850,14 @@ async def mappings_page(auth: str = Depends(require_auth)):
         return "__ignore__"
 
     rows = ""
-    opts = "".join(f'<option value="">(ignore / skip)</option>' +
-                   "".join(f'<option value="{f}">{f}</option>' for f in pdf_options))
 
     for zk in KNOWN_DELUGE_KEYS:
-        auto   = auto_match(zk)
+        auto       = auto_match(zk)
         manual_val = manual.get(zk, "")
         effective  = manual_val if manual_val else auto
         is_override = bool(manual_val)
-        is_dob = (effective == "__dob__")
-        is_ignore = (effective == "__ignore__")
+        is_ignore   = (effective == "__ignore__")
 
-        # Build dropdown with current effective value selected
         def make_opts(selected):
             o  = f'<option value=""{"  selected" if not selected else ""}>(ignore / skip)</option>'
             o += f'<option value="__dob__"{"  selected" if selected == "__dob__" else ""}>__dob__ (Date of Birth comb fields)</option>'
@@ -933,7 +911,6 @@ tr:hover td{{background:#f8fafc}}
 .btn.grey{{background:#e2e8f0;color:#475569;text-decoration:none;display:inline-block}}
 .btn.red{{background:#ef4444}}
 .actions{{margin-bottom:20px;display:flex;align-items:center;gap:8px}}
-.saved{{color:#10b981;font-size:13px;font-weight:600;display:none}}
 </style></head><body>
 <h1>⚙️ Field Mappings</h1>
 <p class="sub">
@@ -944,14 +921,13 @@ tr:hover td{{background:#f8fafc}}
 <div class="legend">
   <span><span class="dot" style="background:#10b981"></span>auto — matched by rule</span>
   <span><span class="dot" style="background:#f59e0b"></span>manual — your override</span>
-  <span><span class="dot" style="background:#6b7280"></span>ignored — not sent to PDF</span>
+  <span><span class="dot" style="background:#6b7280"></span>ignored — datasheet only, not in PDF form</span>
   <span style="color:#f59e0b">⚠ fuzzy — weak match, consider overriding</span>
 </div>
 <div class="actions">
   <a href="/queue" class="btn grey">← Queue</a>
   <button type="submit" form="mapform" class="btn">💾 Save Mappings</button>
   <button type="submit" form="resetform" class="btn red">↺ Reset All to Auto</button>
-  <span class="saved" id="saved">Saved ✓</span>
 </div>
 <form id="mapform" method="POST" action="/mappings">
 <table>
@@ -973,34 +949,26 @@ tr:hover td{{background:#f8fafc}}
 
 @app.post("/mappings")
 async def save_mappings(request: Request, auth: str = Depends(require_auth)):
-    """Save manual mapping overrides to manual_mappings.json."""
     form = await request.form()
     mf   = DATA_DIR / "manual_mappings.json"
-    existing = load_manual_mappings()
-
     updated = {}
     for k, v in form.items():
         v = v.strip()
-        if v:  # only save non-empty overrides
+        if v:
             updated[k] = v
-        elif k in existing:
-            pass  # empty = revert to auto, don't store
-
     mf.write_text(json.dumps(updated, indent=2))
-
-    # Redirect back to mappings page
     from fastapi.responses import RedirectResponse
     return RedirectResponse("/mappings", status_code=303)
 
 
 @app.post("/mappings/reset")
 async def reset_mappings(auth: str = Depends(require_auth)):
-    """Clear all manual overrides — revert everything to AUTO_MAP_RULES."""
     mf = DATA_DIR / "manual_mappings.json"
     if mf.exists():
         mf.write_text("{}")
     from fastapi.responses import RedirectResponse
     return RedirectResponse("/mappings", status_code=303)
+
 
 @app.get("/debug")
 async def debug():
