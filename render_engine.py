@@ -986,12 +986,7 @@ async def studentsheet(request: Request):
         log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_"," "),
                  "filename": filename, "status": "Done", "type": "studentsheet",
                  "created_at": datetime.now().isoformat(), "error": None})
-        return JSONResponse({
-            "ok":      True,
-            "job_id":  job_id,
-            "filename": filename,
-            "pdf_b64": base64.b64encode(pdf_bytes).decode(),
-        })
+        return JSONResponse({"ok": True, "job_id": job_id, "filename": filename})
 
     except Exception as ex:
         log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_"," "),
