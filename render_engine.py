@@ -778,8 +778,10 @@ def generate_student_sheet_pdf(d: dict, photo_bytes: bytes = None) -> bytes:
     exam_data = [
         [Paragraph("<b>Seminar &amp; Exam Details</b>", s_label), ""],
         row("Exam Date", _fmt_date_ss(v("Exam_Date"))),
-        row("Fee",       v("Selected_Course_Fees")),
-        ["", ""],
+    ]
+    if v("Exam_Date_2"):
+        exam_data.append(row("Exam Date 2", _fmt_date_ss(v("Exam_Date_2"))))
+    exam_data.append(row("Fee", v("Selected_Course_Fees")))
     ]
     exam_tbl = Table(exam_data, colWidths=[HALF_W*0.42, HALF_W*0.58])
     exam_tbl.setStyle(_ss_style([
