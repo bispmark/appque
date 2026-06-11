@@ -159,8 +159,10 @@ def get_pdf_fields() -> dict:
     result = {}
     for pg_idx, page in enumerate(reader.pages):
         for ref in page.get("/Annots", []):
-            try:   annot = ref.get_object()
-            except: continue
+            try:
+                annot = ref.get_object()
+            except:
+                continue
             if not annot or annot.get("/Subtype") != "/Widget":
                 continue
             name = str(annot.get("/T", "")).strip()
@@ -168,9 +170,11 @@ def get_pdf_fields() -> dict:
                 continue
             ft = str(annot.get("/FT", ""))
             ff = annot.get("/Ff", 0)
-            try:   ff = int(ff)
-            except: ff = 0
-            rect = [float(v) for v in annot.get("/Rect", [0,0,0,0])]
+            try:
+                ff = int(ff)
+            except:
+                ff = 0
+            rect = [float(v) for v in annot.get("/Rect", [0, 0, 0, 0])]
             result[name] = {
                 "page":      pg_idx,
                 "type":      ft,
@@ -189,8 +193,10 @@ def get_pdf_fields() -> dict:
 def load_manual_mappings() -> dict:
     mf = DATA_DIR / "manual_mappings.json"
     if mf.exists():
-        try:   return json.loads(mf.read_text())
-        except: pass
+        try:
+            return json.loads(mf.read_text())
+        except:
+            pass
     return {}
 
 def _split_dob(s: str):
@@ -211,7 +217,7 @@ def _split_dob(s: str):
 
 def apply_mappings(raw: dict) -> dict:
     pdf_fields = get_pdf_fields()
-    pdf_text   = {k for k,v in pdf_fields.items() if v["type"] == "/Tx"}
+    pdf_text   = {k for k, v in pdf_fields.items() if v["type"] == "/Tx"}
     manual     = load_manual_mappings()
     auto = {}
     for zk in raw:
@@ -237,14 +243,16 @@ def apply_mappings(raw: dict) -> dict:
         if target == "__dob__":
             dd, dm, dy = _split_dob(str(v))
             print(f"[DOB] raw='{v}' → D='{dd}' M='{dm}' Y='{dy}'")
-            out["D"] = dd; out["M"] = dm; out["Y"] = dy
+            out["D"] = dd
+            out["M"] = dm
+            out["Y"] = dy
         else:
             out[target] = str(v) if v is not None else ""
     return out
 
 def build_field_values(mapped: dict) -> dict:
     pdf_fields = get_pdf_fields()
-    pdf_text   = {k for k,v in pdf_fields.items() if v["type"] == "/Tx"}
+    pdf_text   = {k for k, v in pdf_fields.items() if v["type"] == "/Tx"}
     NO_CAPS = {"Email", "Email_2", "Email Address", "Date", "Event date"}
     fv = {
         k: (str(v) if k in NO_CAPS else str(v).upper())
@@ -266,9 +274,10 @@ def _build_comb_ap(value: str, max_len: int, rect: tuple, fs: float = 8.0) -> by
     lines  = ["q", "BT", f"/Cour {fs} Tf", "0 0 0 rg"]
     val    = str(value).ljust(max_len)[:max_len]
     for i, ch in enumerate(val):
-        if not ch.strip(): continue
+        if not ch.strip():
+            continue
         cx   = i * cell_w + (cell_w - fs * 0.6) / 2.0
-        safe = ch.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
+        safe = ch.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
         lines.append(f"1 0 0 1 {cx:.2f} {base:.2f} Tm")
         lines.append(f"({safe}) Tj")
     lines += ["ET", "Q"]
@@ -277,14 +286,20 @@ def _build_comb_ap(value: str, max_len: int, rect: tuple, fs: float = 8.0) -> by
 def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     x1, y1, x2, y2 = rect
     w, h = x2 - x1, y2 - y1
-    PAD_TOP = 2.0; PAD_BOT = 9.0; LG = 1.3
-    MAX_FS  = 9.0; MIN_FS  = 6.0; CPP = 0.52
+    PAD_TOP = 2.0
+    PAD_BOT = 9.0
+    LG = 1.3
+    MAX_FS  = 9.0
+    MIN_FS  = 6.0
+    CPP = 0.52
+
     def wrap(text, fs):
         mc = max(1, int(w / (fs * CPP)))
         lines = []
-        for para in text.replace("\r\n","\n").replace("\r","\n").split("\n"):
+        for para in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
             lines.extend(textwrap.wrap(para, width=mc) or [""])
         return lines
+
     fs = MAX_FS
     while fs >= MIN_FS:
         lines = wrap(value, fs)
@@ -300,13 +315,14 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     parts = ["q", f"0 0 {w:.2f} {h:.2f} re W n", "BT", f"/Helv {fs:.1f} Tf", "0 0 0 rg"]
     for i, line in enumerate(lines):
         yp = sy - i * lh
-        if yp < PAD_BOT: break
-        safe = line.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
-        is_last = (i == len(lines) - 1) or (sy - (i+1)*lh < PAD_BOT)
+        if yp < PAD_BOT:
+            break
+        safe = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        is_last = (i == len(lines) - 1) or (sy - (i + 1) * lh < PAD_BOT)
         if not is_last:
             words = line.split(" ")
             gaps  = len(words) - 1
-            tw    = min(max((usable_w - len(line)*fs*0.52) / gaps, 0), 4.0) if gaps > 0 else 0.0
+            tw    = min(max((usable_w - len(line) * fs * 0.52) / gaps, 0), 4.0) if gaps > 0 else 0.0
         else:
             tw = 0.0
         parts.append(f"{tw:.3f} Tw")
@@ -327,15 +343,17 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
         })
     for page in writer.pages:
         for ref in page.get("/Annots", []):
-            try:   annot = ref.get_object()
-            except: continue
+            try:
+                annot = ref.get_object()
+            except:
+                continue
             if annot is None or not hasattr(annot, "get"):
                 continue
             if annot.get("/Subtype") != "/Widget":
                 continue
             fname    = str(annot.get("/T", ""))
             value    = fv.get(fname, "")
-            rect     = tuple(float(v) for v in annot.get("/Rect", [0,0,0,0]))
+            rect     = tuple(float(v) for v in annot.get("/Rect", [0, 0, 0, 0]))
             ap_bytes = None
             if fname in COMB_FIELDS:
                 if value:
@@ -350,7 +368,7 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
             stream.update({
                 NameObject("/Type"):    NameObject("/XObject"),
                 NameObject("/Subtype"): NameObject("/Form"),
-                NameObject("/BBox"):    RectangleObject([0, 0, rect[2]-rect[0], rect[3]-rect[1]]),
+                NameObject("/BBox"):    RectangleObject([0, 0, rect[2] - rect[0], rect[3] - rect[1]]),
             })
             ap = DictionaryObject()
             ap[NameObject("/N")] = writer._add_object(stream)
@@ -365,8 +383,10 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
 
 def load_jobs() -> list:
     if JOBS_FILE.exists():
-        try:   return json.loads(JOBS_FILE.read_text())
-        except: pass
+        try:
+            return json.loads(JOBS_FILE.read_text())
+        except:
+            pass
     return []
 
 def save_jobs(jobs: list):
@@ -392,7 +412,7 @@ DATASHEET_FIELDS = [
     ("CSWIP 3.1 Cert No",             "CSWIP 3.1 Cert No",             "Event & Examination"),
     ("Current CSWIP Qualifications",  "Current CSWIP Qualifications",  "Event & Examination"),
     # Candidate Details
-    ("Candidate Name as per ID Proof","Candidate Name (as per ID)",    "Candidate Details"),
+    ("Candidate Name as per ID Proof", "Candidate Name (as per ID)",   "Candidate Details"),
     ("Date of Birth",                 "Date of Birth",                 "Candidate Details"),
     ("Contact No",                    "Mobile / Contact No",           "Candidate Details"),
     ("WhatsApp Phone",                "WhatsApp Phone",                "Candidate Details"),
@@ -427,13 +447,13 @@ DATASHEET_FIELDS = [
     ("Contact Email",                 "Contact Email",                 "Sponsoring Company"),
     # Experience
     ("Total Years of Experience",     "Total Years of Experience",     "Experience"),
-    ("Section 2 - Detailed Statement","Section 2 — Detailed Statement","Experience"),
-    ("Section 5 - Detailed Statement","Section 5 — Detailed Statement","Experience"),
+    ("Section 2 - Detailed Statement", "Section 2 — Detailed Statement", "Experience"),
+    ("Section 5 - Detailed Statement", "Section 5 — Detailed Statement", "Experience"),
     # Verifier Details
     ("Verifier Name",                 "Verifier Name",                 "Verifier Details"),
     ("Verifier Company Name",         "Verifier Company",              "Verifier Details"),
     ("Verifier Designation",          "Verifier Designation",          "Verifier Details"),
-    ("Verifier Professional Relation","Professional Relation",         "Verifier Details"),
+    ("Verifier Professional Relation", "Professional Relation",        "Verifier Details"),
     ("Verifier Phone",                "Verifier Phone",                "Verifier Details"),
     ("Verifier Email",                "Verifier Email",                "Verifier Details"),
     ("Verified Date",                 "Verified Date",                 "Verifier Details"),
@@ -447,13 +467,13 @@ def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
     from reportlab.lib.enums import TA_CENTER
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4,
-                            leftMargin=15*mm, rightMargin=15*mm,
-                            topMargin=12*mm,  bottomMargin=12*mm)
-    W = A4[0] - 30*mm
+                            leftMargin=15 * mm, rightMargin=15 * mm,
+                            topMargin=12 * mm, bottomMargin=12 * mm)
+    W = A4[0] - 30 * mm
     BLACK   = colors.black
     GREY_BG = colors.HexColor("#f5f5f5")
-    sty_title = PS("t",   fontSize=13, fontName="Helvetica-Bold", alignment=TA_CENTER, spaceAfter=1*mm)
-    sty_sub   = PS("s",   fontSize=9,  fontName="Helvetica",      alignment=TA_CENTER, spaceAfter=3*mm,
+    sty_title = PS("t",   fontSize=13, fontName="Helvetica-Bold", alignment=TA_CENTER, spaceAfter=1 * mm)
+    sty_sub   = PS("s",   fontSize=9,  fontName="Helvetica",      alignment=TA_CENTER, spaceAfter=3 * mm,
                    textColor=colors.HexColor("#555555"))
     sty_sec   = PS("sec", fontSize=9,  fontName="Helvetica-Bold")
     sty_label = PS("l",   fontSize=10, fontName="Helvetica-Bold")
@@ -472,15 +492,15 @@ def generate_datasheet_pdf(record_data: dict, record_id: str = "") -> bytes:
         sections.setdefault(section, []).append((key, label))
     table_data = []
     table_styles = [
-        ("FONTNAME",      (0,0), (-1,-1), "Helvetica"),
-        ("FONTSIZE",      (0,0), (-1,-1), 10),
-        ("VALIGN",        (0,0), (-1,-1), "TOP"),
-        ("TOPPADDING",    (0,0), (-1,-1), PAD),
-        ("BOTTOMPADDING", (0,0), (-1,-1), PAD),
-        ("LEFTPADDING",   (0,0), (-1,-1), PAD+1),
-        ("RIGHTPADDING",  (0,0), (-1,-1), PAD),
-        ("LINEBELOW",     (0,0), (-1,-1), 0.3, colors.HexColor("#cccccc")),
-        ("BOX",           (0,0), (-1,-1), 0.5, BLACK),
+        ("FONTNAME",      (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 10),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING",    (0, 0), (-1, -1), PAD),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), PAD),
+        ("LEFTPADDING",   (0, 0), (-1, -1), PAD + 1),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), PAD),
+        ("LINEBELOW",     (0, 0), (-1, -1), 0.3, colors.HexColor("#cccccc")),
+        ("BOX",           (0, 0), (-1, -1), 0.5, BLACK),
     ]
     row_idx = 0
     for sec_name, fields in sections.items():
@@ -536,15 +556,15 @@ class _UnderlinedTitle(Flowable):
 def _ss_style(extra=None):
     """Standard table style for student sheet."""
     base = [
-        ("FONTNAME",      (0,0), (-1,-1), "Helvetica"),
-        ("FONTSIZE",      (0,0), (-1,-1), 9),
-        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-        ("TOPPADDING",    (0,0), (-1,-1), 4),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
-        ("LEFTPADDING",   (0,0), (-1,-1), 5),
-        ("RIGHTPADDING",  (0,0), (-1,-1), 4),
-        ("GRID",          (0,0), (-1,-1), 0.5, colors.HexColor("#d0d0d0")),
-        ("BOX",           (0,0), (-1,-1), 0.8, colors.black),
+        ("FONTNAME",      (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 9),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
+        ("GRID",          (0, 0), (-1, -1), 0.5, colors.HexColor("#d0d0d0")),
+        ("BOX",           (0, 0), (-1, -1), 0.8, colors.black),
     ]
     if extra:
         base.extend(extra)
@@ -642,7 +662,7 @@ def generate_student_sheet_pdf(d: dict, photo_bytes: bytes = None) -> bytes:
     WHITE      = colors.white
 
     s_section  = ParagraphStyle("ss_sec",  fontName="Helvetica-Bold", fontSize=10,
-                                spaceBefore=4*mm, spaceAfter=1*mm)
+                                spaceBefore=4 * mm, spaceAfter=1 * mm)
     s_label    = ParagraphStyle("ss_lbl",  fontName="Helvetica-Bold", fontSize=9)
     s_value    = ParagraphStyle("ss_val",  fontName="Helvetica",      fontSize=9)
     s_center   = ParagraphStyle("ss_ctr",  fontName="Helvetica-Bold", fontSize=9,
@@ -660,28 +680,28 @@ def generate_student_sheet_pdf(d: dict, photo_bytes: bytes = None) -> bytes:
     buf   = io.BytesIO()
     doc   = SimpleDocTemplate(buf, pagesize=A4,
                               leftMargin=LM, rightMargin=RM,
-                              topMargin=TM,  bottomMargin=BM)
+                              topMargin=TM, bottomMargin=BM)
     story = []
 
     # ── HEADER ────────────────────────────────────────────────────────────────
     if LOGO_PATH.exists():
-        logo = RLImage(str(LOGO_PATH), width=52*mm, height=14*mm)
+        logo = RLImage(str(LOGO_PATH), width=52 * mm, height=14 * mm)
     else:
         logo = Paragraph("<b>BLASTLINE INSTITUTE</b>", s_label)
 
     hdr = Table([[_UnderlinedTitle("Student Data Sheet"), logo]],
                 colWidths=[CW * 0.62, CW * 0.38])
     hdr.setStyle(TableStyle([
-        ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
-        ("ALIGN",        (1,0), (1,0),   "RIGHT"),
-        ("TOPPADDING",   (0,0), (-1,-1), 0),
-        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
-        ("LEFTPADDING",  (0,0), (-1,-1), 0),
-        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN",        (1, 0), (1, 0),   "RIGHT"),
+        ("TOPPADDING",   (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
     story.append(hdr)
-    story.append(Spacer(1, 5*mm))
-    story.append(HRFlowable(width="100%", thickness=1.5, color=BLACK, spaceAfter=3*mm))
+    story.append(Spacer(1, 5 * mm))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=BLACK, spaceAfter=3 * mm))
 
     # ── CANDIDATE DETAILS ─────────────────────────────────────────────────────
     story.append(Paragraph("Candidate Details", s_section))
@@ -702,30 +722,30 @@ def generate_student_sheet_pdf(d: dict, photo_bytes: bytes = None) -> bytes:
         row("Emergency Number", v("Emergency_Phone")),
         row("Email Id",         v("Email")),
     ]
-    cand_tbl = Table(cand_rows, colWidths=[42*mm, 72*mm])
+    cand_tbl = Table(cand_rows, colWidths=[42 * mm, 72 * mm])
     cand_tbl.setStyle(_ss_style([
-        ("FONTNAME", (0,0), (0,-1), "Helvetica-Bold"),
-        ("VALIGN",   (0,2), (1,2),  "TOP"),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("VALIGN",   (0, 2), (1, 2),  "TOP"),
     ]))
 
     # Photo — auto center-crop to portrait ID ratio before embedding
     if photo_bytes:
         try:
             processed  = _process_photo(photo_bytes, box_w_mm=33, box_h_mm=42)
-            photo_cell = RLImage(io.BytesIO(processed), width=33*mm, height=42*mm)
+            photo_cell = RLImage(io.BytesIO(processed), width=33 * mm, height=42 * mm)
         except Exception as photo_err:
             print(f"[PHOTO] processing failed: {photo_err}")
             photo_cell = Paragraph("Photo", s_center)
     else:
         photo_cell = Paragraph("Photo", s_center)
 
-    photo_box = Table([[photo_cell]], colWidths=[35*mm], rowHeights=[44*mm])
+    photo_box = Table([[photo_cell]], colWidths=[35 * mm], rowHeights=[44 * mm])
     photo_box.setStyle(TableStyle([
-        ("BOX",           (0,0), (-1,-1), 0.8, BLACK),
-        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-        ("ALIGN",         (0,0), (-1,-1), "CENTER"),
-        ("TOPPADDING",    (0,0), (-1,-1), 2),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 2),
+        ("BOX",           (0, 0), (-1, -1), 0.8, BLACK),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING",    (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
 
     today_str  = date.today().strftime("%d-%b-%Y")
@@ -733,32 +753,32 @@ def generate_student_sheet_pdf(d: dict, photo_bytes: bytes = None) -> bytes:
 
     right_data = [
         [Paragraph(f"<b>Date:</b>  {today_str}", s_value)],
-        [Spacer(1, 2*mm)],
+        [Spacer(1, 2 * mm)],
         [Paragraph(f"<b>Student ID:</b>  {student_id}", s_value)],
-        [Spacer(1, 3*mm)],
+        [Spacer(1, 3 * mm)],
         [photo_box],
     ]
-    right_tbl = Table(right_data, colWidths=[45*mm])
+    right_tbl = Table(right_data, colWidths=[45 * mm])
     right_tbl.setStyle(TableStyle([
-        ("TOPPADDING",    (0,0), (-1,-1), 2),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 2),
-        ("LEFTPADDING",   (0,0), (-1,-1), 4),
-        ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+        ("TOPPADDING",    (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
     ]))
 
-    outer = Table([[cand_tbl, right_tbl]], colWidths=[CW*0.745, CW*0.255])
+    outer = Table([[cand_tbl, right_tbl]], colWidths=[CW * 0.745, CW * 0.255])
     outer.setStyle(TableStyle([
-        ("VALIGN",       (0,0), (-1,-1), "TOP"),
-        ("TOPPADDING",   (0,0), (-1,-1), 0),
-        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
-        ("LEFTPADDING",  (0,0), (-1,-1), 0),
-        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING",   (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
     story.append(outer)
-    story.append(Spacer(1, 4*mm))
+    story.append(Spacer(1, 4 * mm))
 
     # ── COURSE + EXAM  (side by side) ─────────────────────────────────────────
-    GAP    = 4*mm
+    GAP    = 4 * mm
     HALF_W = (CW - GAP) / 2
 
     course_data = [
@@ -767,14 +787,15 @@ def generate_student_sheet_pdf(d: dict, photo_bytes: bytes = None) -> bytes:
         row("Course Date",  _fmt_date_ss(v("Course_Date"))),
         row("Fee",          v("Course_Fees")),
     ]
-    course_tbl = Table(course_data, colWidths=[HALF_W*0.42, HALF_W*0.58])
+    course_tbl = Table(course_data, colWidths=[HALF_W * 0.42, HALF_W * 0.58])
     course_tbl.setStyle(_ss_style([
-        ("SPAN",       (0,0), (1,0)),
-        ("BACKGROUND", (0,0), (1,0), GREY_BG),
-        ("FONTNAME",   (0,0), (1,0), "Helvetica-Bold"),
-        ("FONTNAME",   (0,1), (0,-1), "Helvetica-Bold"),
+        ("SPAN",       (0, 0), (1, 0)),
+        ("BACKGROUND", (0, 0), (1, 0), GREY_BG),
+        ("FONTNAME",   (0, 0), (1, 0), "Helvetica-Bold"),
+        ("FONTNAME",   (0, 1), (0, -1), "Helvetica-Bold"),
     ]))
 
+    # ── UPDATED: Exam section with conditional Exam Date 2 ────────────────────
     exam_data = [
         [Paragraph("<b>Seminar &amp; Exam Details</b>", s_label), ""],
         row("Exam Date", _fmt_date_ss(v("Exam_Date"))),
@@ -782,25 +803,25 @@ def generate_student_sheet_pdf(d: dict, photo_bytes: bytes = None) -> bytes:
     if v("Exam_Date_2"):
         exam_data.append(row("Exam Date 2", _fmt_date_ss(v("Exam_Date_2"))))
     exam_data.append(row("Fee", v("Selected_Course_Fees")))
-    ]
-    exam_tbl = Table(exam_data, colWidths=[HALF_W*0.42, HALF_W*0.58])
+
+    exam_tbl = Table(exam_data, colWidths=[HALF_W * 0.42, HALF_W * 0.58])
     exam_tbl.setStyle(_ss_style([
-        ("SPAN",       (0,0), (1,0)),
-        ("BACKGROUND", (0,0), (1,0), GREY_BG),
-        ("FONTNAME",   (0,0), (1,0), "Helvetica-Bold"),
-        ("FONTNAME",   (0,1), (0,-1), "Helvetica-Bold"),
+        ("SPAN",       (0, 0), (1, 0)),
+        ("BACKGROUND", (0, 0), (1, 0), GREY_BG),
+        ("FONTNAME",   (0, 0), (1, 0), "Helvetica-Bold"),
+        ("FONTNAME",   (0, 1), (0, -1), "Helvetica-Bold"),
     ]))
 
     sbs = Table([[course_tbl, Spacer(GAP, 1), exam_tbl]], colWidths=[HALF_W, GAP, HALF_W])
     sbs.setStyle(TableStyle([
-        ("VALIGN",       (0,0), (-1,-1), "TOP"),
-        ("TOPPADDING",   (0,0), (-1,-1), 0),
-        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
-        ("LEFTPADDING",  (0,0), (-1,-1), 0),
-        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING",   (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
     story.append(sbs)
-    story.append(Spacer(1, 5*mm))
+    story.append(Spacer(1, 5 * mm))
 
     # ── FREE TEXT QUESTIONS ───────────────────────────────────────────────────
     fq_data = [
@@ -811,21 +832,22 @@ def generate_student_sheet_pdf(d: dict, photo_bytes: bytes = None) -> bytes:
         [Paragraph("How did you know about Blastline Institute?", s_freetext),
          Paragraph(v("Lead_Source"), s_value)],
     ]
-    fq_tbl = Table(fq_data, colWidths=[CW*0.52, CW*0.48])
+    fq_tbl = Table(fq_data, colWidths=[CW * 0.52, CW * 0.48])
     fq_tbl.setStyle(_ss_style([
-        ("FONTNAME",      (0,0), (-1,-1), "Helvetica"),
-        ("TOPPADDING",    (0,0), (-1,-1), 5),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 5),
-        ("VALIGN",        (0,0), (-1,-1), "TOP"),
+        ("FONTNAME",      (0, 0), (-1, -1), "Helvetica"),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
     ]))
     story.append(fq_tbl)
-    story.append(Spacer(1, 5*mm))
+    story.append(Spacer(1, 5 * mm))
     story.append(HRFlowable(width="100%", thickness=0.8,
-                            color=colors.HexColor("#d0d0d0"), spaceAfter=4*mm))
+                            color=colors.HexColor("#d0d0d0"), spaceAfter=4 * mm))
 
     # ── IF WORKING ────────────────────────────────────────────────────────────
     story.append(Paragraph("If Working,", s_section))
-    C1 = CW * 0.28; C2 = CW * 0.22
+    C1 = CW * 0.28
+    C2 = CW * 0.22
     work_data = [
         [Paragraph("Name of the Company",  s_label), Paragraph(v("Name_of_the_Company"), s_value),
          Paragraph("Email Id",             s_label), Paragraph(v("HR_Email_Id"),          s_value)],
@@ -834,31 +856,34 @@ def generate_student_sheet_pdf(d: dict, photo_bytes: bytes = None) -> bytes:
     ]
     work_tbl = Table(work_data, colWidths=[C1, C2, C1, C2])
     work_tbl.setStyle(_ss_style([
-        ("FONTNAME", (0,0), (0,-1), "Helvetica-Bold"),
-        ("FONTNAME", (2,0), (2,-1), "Helvetica-Bold"),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
     ]))
     story.append(work_tbl)
-    story.append(Spacer(1, 6*mm))
+    story.append(Spacer(1, 6 * mm))
 
     # ── FOR OFFICE USE ────────────────────────────────────────────────────────
-    story.append(HRFlowable(width="100%", thickness=1, color=BLACK, spaceAfter=3*mm))
+    story.append(HRFlowable(width="100%", thickness=1, color=BLACK, spaceAfter=3 * mm))
     story.append(Paragraph("<b>For Office Use</b>", s_office))
-    story.append(Spacer(1, 2*mm))
+    story.append(Spacer(1, 2 * mm))
 
-    R1 = CW*0.38; R2 = CW*0.12; R3 = CW*0.28; R4 = CW*0.22
+    R1 = CW * 0.38
+    R2 = CW * 0.12
+    R3 = CW * 0.28
+    R4 = CW * 0.22
     remarks_data = [
         [Paragraph("Remarks:", s_label), "",
          Paragraph("Verified By - Name:", s_label), ""],
         ["", "", Paragraph("Signature:", s_label), ""],
     ]
     remarks_tbl = Table(remarks_data, colWidths=[R1, R2, R3, R4],
-                        rowHeights=[10*mm, 10*mm])
+                        rowHeights=[10 * mm, 10 * mm])
     remarks_tbl.setStyle(_ss_style([
-        ("SPAN",    (0,0), (0,1)),
-        ("SPAN",    (1,0), (1,1)),
-        ("VALIGN",  (0,0), (-1,-1), "TOP"),
-        ("FONTNAME",(0,0), (0,-1), "Helvetica-Bold"),
-        ("FONTNAME",(2,0), (2,-1), "Helvetica-Bold"),
+        ("SPAN",    (0, 0), (0, 1)),
+        ("SPAN",    (1, 0), (1, 1)),
+        ("VALIGN",  (0, 0), (-1, -1), "TOP"),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
     ]))
     story.append(remarks_tbl)
 
@@ -883,7 +908,8 @@ async def generate(request: Request):
     cname = ""
     for k in ("Candidate Name as per ID Proof", "Full_Name", "Last_Name", "Name", "name"):
         if record_data.get(k):
-            cname = str(record_data[k]).strip().replace(" ", "_"); break
+            cname = str(record_data[k]).strip().replace(" ", "_")
+            break
     cname    = cname or "Candidate"
     filename = body.get("filename") or f"TWI_{cname}_{datetime.now().strftime('%Y%m%d')}.pdf"
     try:
@@ -893,16 +919,17 @@ async def generate(request: Request):
         pdf_bytes = fill_pdf(template, fv)
         if record_id != "unknown":
             for old_job in load_jobs():
-                if old_job.get("record_id") == record_id and old_job.get("type","twi") == "twi":
+                if old_job.get("record_id") == record_id and old_job.get("type", "twi") == "twi":
                     old_pdf = PDF_STORE / f"{old_job['id']}.pdf"
-                    if old_pdf.exists(): old_pdf.unlink()
+                    if old_pdf.exists():
+                        old_pdf.unlink()
         (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
-        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_"," "),
+        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_", " "),
                  "filename": filename, "status": "Done", "type": "twi",
                  "created_at": datetime.now().isoformat(), "error": None})
         return JSONResponse({"ok": True, "job_id": job_id, "filename": filename})
     except Exception as ex:
-        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_"," "),
+        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_", " "),
                  "filename": filename, "status": "Error", "type": "twi",
                  "created_at": datetime.now().isoformat(), "error": str(ex)})
         raise HTTPException(500, str(ex))
@@ -919,7 +946,8 @@ async def datasheet(request: Request):
     cname = ""
     for k in ("Candidate Name as per ID Proof", "Name", "name"):
         if record_data.get(k):
-            cname = str(record_data[k]).strip().replace(" ", "_"); break
+            cname = str(record_data[k]).strip().replace(" ", "_")
+            break
     cname    = cname or "Candidate"
     filename = f"DataSheet_{cname}_{datetime.now().strftime('%Y%m%d')}.pdf"
     try:
@@ -928,14 +956,15 @@ async def datasheet(request: Request):
             for old_job in load_jobs():
                 if old_job.get("record_id") == record_id and old_job.get("type") == "datasheet":
                     old_pdf = PDF_STORE / f"{old_job['id']}.pdf"
-                    if old_pdf.exists(): old_pdf.unlink()
+                    if old_pdf.exists():
+                        old_pdf.unlink()
         (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
-        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_"," "),
+        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_", " "),
                  "filename": filename, "status": "Done", "type": "datasheet",
                  "created_at": datetime.now().isoformat(), "error": None})
         return JSONResponse({"ok": True, "job_id": job_id, "filename": filename})
     except Exception as ex:
-        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_"," "),
+        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_", " "),
                  "filename": filename, "status": "Error", "type": "datasheet",
                  "created_at": datetime.now().isoformat(), "error": str(ex)})
         raise HTTPException(500, str(ex))
@@ -962,7 +991,8 @@ async def studentsheet(request: Request):
     cname = ""
     for k in ("Candidate_Name", "First_Name", "Name", "name"):
         if record_data.get(k):
-            cname = str(record_data[k]).strip().replace(" ", "_"); break
+            cname = str(record_data[k]).strip().replace(" ", "_")
+            break
     cname    = cname or "Student"
     filename = f"StudentSheet_{cname}_{datetime.now().strftime('%Y%m%d')}.pdf"
 
@@ -982,16 +1012,17 @@ async def studentsheet(request: Request):
             for old_job in load_jobs():
                 if old_job.get("record_id") == record_id and old_job.get("type") == "studentsheet":
                     old_pdf = PDF_STORE / f"{old_job['id']}.pdf"
-                    if old_pdf.exists(): old_pdf.unlink()
+                    if old_pdf.exists():
+                        old_pdf.unlink()
 
         (PDF_STORE / f"{job_id}.pdf").write_bytes(pdf_bytes)
-        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_"," "),
+        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_", " "),
                  "filename": filename, "status": "Done", "type": "studentsheet",
                  "created_at": datetime.now().isoformat(), "error": None})
         return JSONResponse({"ok": True, "job_id": job_id, "filename": filename})
 
     except Exception as ex:
-        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_"," "),
+        log_job({"id": job_id, "record_id": record_id, "candidate": cname.replace("_", " "),
                  "filename": filename, "status": "Error", "type": "studentsheet",
                  "created_at": datetime.now().isoformat(), "error": str(ex)})
         raise HTTPException(500, str(ex))
@@ -1022,10 +1053,10 @@ async def list_fields():
     fields = get_pdf_fields()
     return JSONResponse({
         "total":            len(fields),
-        "text_fields":      sorted([k for k,v in fields.items() if v["type"] == "/Tx"]),
-        "button_fields":    sorted([k for k,v in fields.items() if v["type"] == "/Btn"]),
-        "comb_fields":      sorted([k for k,v in fields.items() if v["comb"]]),
-        "multiline_fields": sorted([k for k,v in fields.items() if v["multiline"]]),
+        "text_fields":      sorted([k for k, v in fields.items() if v["type"] == "/Tx"]),
+        "button_fields":    sorted([k for k, v in fields.items() if v["type"] == "/Btn"]),
+        "comb_fields":      sorted([k for k, v in fields.items() if v["comb"]]),
+        "multiline_fields": sorted([k for k, v in fields.items() if v["multiline"]]),
         "all":              {k: v for k, v in sorted(fields.items())},
     })
 
@@ -1049,21 +1080,21 @@ async def queue_page(auth: str = Depends(require_auth)):
     for job in jobs:
         status = job.get("status", "?")
         jtype  = job.get("type", "twi")
-        color  = {"Done":"#10b981","Error":"#ef4444"}.get(status,"#f59e0b")
+        color  = {"Done": "#10b981", "Error": "#ef4444"}.get(status, "#f59e0b")
         badge  = (f'<span style="background:{color};color:#fff;padding:2px 10px;'
                   f'border-radius:12px;font-size:11px;font-weight:600">{status}</span>')
-        tbadge = (f'<span style="background:{TYPE_COLORS.get(jtype,"#6366f1")};color:#fff;'
+        tbadge = (f'<span style="background:{TYPE_COLORS.get(jtype, "#6366f1")};color:#fff;'
                   f'padding:1px 8px;border-radius:8px;font-size:10px">{jtype}</span>')
-        ts     = job.get("created_at","")[:16].replace("T"," ")
+        ts     = job.get("created_at", "")[:16].replace("T", " ")
         dl     = (f'<a href="/pdf/{job["id"]}" target="_blank" style="background:#3b82f6;'
                   f'color:#fff;padding:4px 14px;border-radius:5px;text-decoration:none;'
                   f'font-size:12px">⬇ Download</a>'
                   if status == "Done" else
-                  f'<span style="color:#ef4444;font-size:11px">{job.get("error","")[:60]}</span>')
-        rows  += (f'<tr><td>{job.get("candidate","—")}</td>'
-                  f'<td style="color:#64748b;font-size:11px">{job.get("record_id","")}</td>'
+                  f'<span style="color:#ef4444;font-size:11px">{job.get("error", "")[:60]}</span>')
+        rows  += (f'<tr><td>{job.get("candidate", "—")}</td>'
+                  f'<td style="color:#64748b;font-size:11px">{job.get("record_id", "")}</td>'
                   f'<td>{tbadge}</td>'
-                  f'<td>{job.get("filename","—")}</td>'
+                  f'<td>{job.get("filename", "—")}</td>'
                   f'<td>{badge}</td>'
                   f'<td style="color:#64748b;font-size:12px">{ts}</td>'
                   f'<td>{dl}</td></tr>')
@@ -1156,7 +1187,7 @@ a.btn.grey{{background:#e2e8f0;color:#475569}}
 @app.get("/mappings", response_class=HTMLResponse)
 async def mappings_page(auth: str = Depends(require_auth)):
     pdf_fields  = get_pdf_fields()
-    pdf_options = sorted([k for k,v in pdf_fields.items() if v["type"] == "/Tx"])
+    pdf_options = sorted([k for k, v in pdf_fields.items() if v["type"] == "/Tx"])
     manual      = load_manual_mappings()
 
     KNOWN_DELUGE_KEYS = [
@@ -1185,7 +1216,7 @@ async def mappings_page(auth: str = Depends(require_auth)):
         for pattern, target in AUTO_MAP_RULES:
             if re.search(pattern, zk, re.IGNORECASE):
                 return target
-        pdf_text = {k for k,v in pdf_fields.items() if v["type"] == "/Tx"}
+        pdf_text = {k for k, v in pdf_fields.items() if v["type"] == "/Tx"}
         norm_zk  = re.sub(r"[^a-z0-9]", "", zk.lower())
         for pf in pdf_text:
             norm_pf = re.sub(r"[^a-z0-9]", "", pf.lower())
@@ -1310,10 +1341,14 @@ async def reset_mappings(auth: str = Depends(require_auth)):
 @app.get("/debug")
 async def debug():
     import sys
-    try:   app_files  = [f.name for f in _APP_DIR.iterdir()]
-    except Exception as e: app_files = [str(e)]
-    try:   data_files = [f.name for f in DATA_DIR.iterdir()]
-    except Exception as e: data_files = [str(e)]
+    try:
+        app_files = [f.name for f in _APP_DIR.iterdir()]
+    except Exception as e:
+        app_files = [str(e)]
+    try:
+        data_files = [f.name for f in DATA_DIR.iterdir()]
+    except Exception as e:
+        data_files = [str(e)]
     return JSONResponse({
         "cwd":             os.getcwd(),
         "app_dir":         str(_APP_DIR),
