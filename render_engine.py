@@ -8,7 +8,7 @@ Deluge attaches it to the CRM record natively.
 Endpoints
 ---------
 POST /generate       Fill TWI enrolment form PDF
-POST /datasheet      Generate raw data verification sheet
+POST /datasheet       Generate raw data verification sheet
 POST /studentsheet   Generate Blastline Institute Student Data Sheet
 GET  /pdf/{job_id}   Download PDF by job ID
 GET  /queue          Job log (Basic Auth)
@@ -83,46 +83,95 @@ app.add_middleware(
 # FIELD METADATA  (TWI form)
 # ══════════════════════════════════════════════════════════════════════════════
 
-COMB_FIELDS   = {"undefined": 6, "D": 2, "M": 2, "Y": 4}
+# NOTE — TWI form Rev. 26 (2026-07): the page-1 "TWI office form" cover sheet
+# was regenerated with auto-assigned field IDs (I101...I155) instead of the
+# old descriptive names. Pages 2-4 (Sections 1-8) were untouched, so those
+# targets ("PCN or BGAS Approval Number", "Name in capitals", "1", "1_2",
+# "Date", etc.) are still correct below. Mapping derived by matching each
+# I1xx widget's page position against the Rev.26 layout on 2026-07-15.
+COMB_FIELDS   = {"I101": 6, "I105": 2, "I106": 2, "I107": 4}
 SPECIAL_TOKENS = {"__dob__", "__ignore__"}
 
+# Human-readable labels for the new anonymous page-1 field IDs — purely for
+# display in the /mappings admin UI and /fields output, not used for matching.
+PDF_FIELD_LABELS = {
+    "I101": "TWI Candidate ID Number",
+    "I102": "Event title",
+    "I103": "Event date",
+    "I104": "Name of Delegate",
+    "I105": "Date of Birth — DD",
+    "I106": "Date of Birth — MM",
+    "I107": "Date of Birth — YYYY",
+    "I108": "Disability/dietary needs (Yes/No radio)",
+    "I111": "Direct Tel",
+    "I112": "Emergency Tel",
+    "I113": "Candidate E-mail",
+    "I114": "Permanent private address 1", "I115": "Permanent private address 2",
+    "I116": "Permanent private address 3", "I117": "Permanent private address 4",
+    "I118": "Permanent private address Postcode",
+    "I119": "Correspondence address 1", "I120": "Correspondence address 2",
+    "I121": "Correspondence address 3", "I122": "Correspondence address 4",
+    "I123": "Correspondence address Postcode",
+    "I124": "Invoice address 1", "I125": "Invoice address 2",
+    "I126": "Invoice address 3", "I127": "Invoice address 4",
+    "I128": "Invoice address Postcode",
+    "I129": "Sponsoring Company Name", "I130": "Sponsoring Company Address 1",
+    "I131": "Sponsoring Company Address 2", "I132": "Sponsoring Company Address 3",
+    "I133": "Sponsoring Company Address 4", "I134": "Sponsoring Company Postcode",
+    "I135": "Sponsoring Contact Name", "I136": "Sponsoring Contact Tel",
+    "I137": "Sponsoring Contact E-mail",
+    "I138": "Self-sponsored / Company sponsored (radio)",
+    "I140": "GSTIN Number", "I141": "Company order No", "I142": "Approving manager's name",
+    "I143": "Venue: India", "I144": "Venue: Sri Lanka", "I145": "Venue: Nepal",
+    "I146": "Venue: Bangladesh", "I147": "Venue: Myanmar",
+    "I148": "Member of Welding & Joining Society", "I149": "Employee of TWI Industrial Member",
+    "I150": "GDPR marketing consent",
+    "I151": "Internal Use — Booking Ref",
+    "I152": "Learning Language: English", "I153": "Learning Language: Other (checkbox)",
+    "I154": "Learning Language: Other (specify)",
+    "I155": "Representative identification / Agent number",
+}
+
 AUTO_MAP_RULES = [
-    (r"batch.?date|exam.?date",                                    "Event date"),
-    (r"course.?name|event.?title",                                 "Event title"),
-    (r"candidate.?name|name.?as.?per.?id",                         "Candidates Family Name as per ID  Passport"),
-    (r"twi.?candidate.?(number|id|no)",                            "undefined"),
+    (r"batch.?date|exam.?date",                                    "I103"),
+    (r"course.?name|event.?title",                                 "I102"),
+    (r"candidate.?name|name.?as.?per.?id",                         "I104"),
+    (r"twi.?candidate.?(number|id|no)",                            "I101"),
     (r"date.?of.?birth|dob",                                       "__dob__"),
-    (r"^address$|address.?line.?1|permanent.?address",             "Permanent private address 1"),
-    (r"^city$|address.?line.?2",                                   "Permanent private address 2"),
-    (r"^district$|address.?line.?3",                               "Permanent private address 3"),
-    (r"sponsoring.*pincode",                                       "Postcode_2"),
-    (r"pincode|postcode|postal",                                   "Postcode"),
-    (r"correspondence.*1|correspondence.?address$",                "Correspondence address if different from above 1"),
-    (r"correspondence.*2",                                         "Correspondence address if different from above 2"),
-    (r"correspondence.*3",                                         "Correspondence address if different from above 3"),
-    (r"correspondence.*4",                                         "Correspondence address if different from above 4"),
-    (r"invoice.*1|invoice.?address$",                              "Invoice address if different from below 1"),
-    (r"invoice.*2",                                                "Invoice address if different from below 2"),
-    (r"invoice.*3",                                                "Invoice address if different from below 3"),
-    (r"invoice.*4",                                                "Invoice address if different from below 4"),
-    (r"sponsoring.*address.*1|sponsoring.*1",                      "Sponsoring Company and Address 1"),
-    (r"sponsoring.*address.*2|sponsoring.*2",                      "Sponsoring Company and Address 2"),
-    (r"sponsoring.*address.*3|sponsoring.*3",                      "Sponsoring Company and Address 3"),
-    (r"^contact.?name$",                                           "Contact Name"),
-    (r"contact.?tel(ephone)?",                                     "Tel_2"),
-    (r"contact.?email",                                            "Email_2"),
-    (r"contact.?no|mobile|private.?tel",                           "Private Tel"),
-    (r"emergency.?contact",                                        "Tel"),
-    (r"^email$|candidate.?email",                                  "Email"),
+    (r"^address$|address.?line.?1|permanent.?address",             "I114"),
+    (r"^city$|address.?line.?2",                                   "I115"),
+    (r"^district$|address.?line.?3",                               "I116"),
+    (r"sponsoring.*pincode",                                       "I134"),
+    (r"pincode|postcode|postal",                                   "I118"),
+    (r"correspondence.*1|correspondence.?address$",                "I119"),
+    (r"correspondence.*2",                                         "I120"),
+    (r"correspondence.*3",                                         "I121"),
+    (r"correspondence.*4",                                         "I122"),
+    (r"invoice.*1|invoice.?address$",                              "I124"),
+    (r"invoice.*2",                                                "I125"),
+    (r"invoice.*3",                                                "I126"),
+    (r"invoice.*4",                                                "I127"),
+    (r"sponsoring.*address.*1|sponsoring.*1",                      "I129"),
+    (r"sponsoring.*address.*2|sponsoring.*2",                      "I130"),
+    (r"sponsoring.*address.*3|sponsoring.*3",                      "I131"),
+    (r"^contact.?name$",                                           "I135"),
+    (r"contact.?tel(ephone)?",                                     "I136"),
+    (r"contact.?email",                                            "I137"),
+    (r"contact.?no|mobile|private.?tel",                           "I111"),
+    (r"emergency.?contact",                                        "I112"),
+    (r"^email$|candidate.?email",                                  "I113"),
+    (r"gst(in)?.?(no|number)?",                                    "I140"),
+    (r"company.*order|order.*no",                                  "I141"),
+    (r"approving.*manager|manager.*name",                          "I142"),
+    (r"agent.?(number|id|code)|representative.?id",                "I155"),
+    (r"booking.?ref",                                               "I151"),
     (r"pcn.*bgas.*approval|bgas.*approval|pcn.*approval",          "PCN or BGAS Approval Number"),
     (r"bgas.?cert|pcn.?cert|bgas.?no",                             "PCN or BGAS Approval Number"),
     (r"cswip.*cert|cswip.*no|cswip.*qualif|current.*cswip",        "Current CSWIP qualifications held"),
     (r"duties|responsibilities",                                   "1"),
     (r"section.?5.?detail|detailed.?statement",                    "1_2"),
     (r"ndt.*exp|plant.*exp",                                       "1_2"),
-    (r"company.?name|present.?company|sponsor.*company",           "Sponsoring Company and Address 1"),
-    (r"company.*order|order.*no",                                  "Company order No"),
-    (r"approving.*manager|manager.*name",                          "name"),
+    (r"company.?name|present.?company|sponsor.*company",           "I129"),
     (r"verifier.*professional|professional.*relation",             "to the candidate"),
     (r"verifier.*company.*pos|verifier.*position",                 "Company  position"),
     (r"verifier.?name",                                            "Name in capitals"),
@@ -142,6 +191,93 @@ AUTO_MAP_RULES = [
     # Catch-all
     (r"designation|company.*position",                             "Company  position"),
 ]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHECKBOX / RADIO HANDLING  (new in Rev. 26 — I108, I138, I143-I150, I152-I153)
+# ══════════════════════════════════════════════════════════════════════════════
+# These are /Btn widgets, not /Tx, so they can't go through AUTO_MAP_RULES /
+# build_field_values (which only fills text fields). CRM keys matching the
+# patterns below are pulled out of the raw record separately and resolved to
+# the PDF's actual export values (see /debug-checkbox-values or /fields
+# "button_fields" to confirm export names if the template changes again).
+
+SPECIAL_KEY_PATTERNS = [
+    (r"disab|dietary|access.?requirement",                          "__disability__"),
+    (r"self.?sponsor|sponsor.?type|company.?sponsor",                "__sponsor_type__"),
+    (r"^venue$|training.?venue|event.?venue",                        "__venue__"),
+    (r"welding.?joining.?society|wjs.?member",                       "I148"),
+    (r"industrial.?member|twi.?employee",                            "I149"),
+    (r"gdpr|marketing.?consent|opt.?in",                              "I150"),
+    (r"learning.?language|preferred.?language",                      "__learning_language__"),
+]
+
+# I108: Yes/No radio — two widgets sharing the name I108, export values "1"/"2"
+RADIO_EXPORTS = {
+    "I108": {"yes": "1", "y": "1", "true": "1", "1": "1",
+             "no": "2", "n": "2", "false": "2", "2": "2"},
+    "I138": {"self": "3", "self-sponsored": "3", "self sponsored": "3",
+             "company": "4", "company-sponsored": "4", "company sponsored": "4"},
+}
+
+# Venue is one field per country — CRM sends a single venue value, we tick
+# whichever of I143-I147 matches.
+VENUE_EXPORTS = {
+    "india": "I143", "sri lanka": "I144", "srilanka": "I144",
+    "nepal": "I145", "bangladesh": "I146", "myanmar": "I147",
+}
+
+# Plain single checkboxes — any truthy value ticks them ("Yes" export state)
+CHECKBOX_SIMPLE = {"I148", "I149", "I150"}
+
+
+def _truthy(v) -> bool:
+    return str(v).strip().lower() in ("yes", "true", "1", "y", "checked", "on")
+
+
+def extract_checkbox_values(raw: dict):
+    """
+    Scan the raw CRM record for keys matching SPECIAL_KEY_PATTERNS.
+    Returns (checkbox_values, extra_text_values):
+      checkbox_values  — {field_name: export_token} for /Btn widgets, to be
+                          applied directly to /V and /AS in fill_pdf().
+      extra_text_values — {field_name: text} for any /Tx side-effects
+                          (e.g. the free-text "Other" learning language box).
+    """
+    checkbox_values = {}
+    extra_text_values = {}
+    for zk, v in raw.items():
+        if v is None or str(v).strip() == "":
+            continue
+        matched = None
+        for pattern, target in SPECIAL_KEY_PATTERNS:
+            if re.search(pattern, zk, re.IGNORECASE):
+                matched = target
+                break
+        if matched is None:
+            continue
+        sval = str(v).strip().lower()
+        if matched == "__disability__":
+            token = RADIO_EXPORTS["I108"].get(sval)
+            if token:
+                checkbox_values["I108"] = token
+        elif matched == "__sponsor_type__":
+            token = RADIO_EXPORTS["I138"].get(sval)
+            if token:
+                checkbox_values["I138"] = token
+        elif matched == "__venue__":
+            fname = VENUE_EXPORTS.get(sval)
+            if fname:
+                checkbox_values[fname] = "Yes"
+        elif matched == "__learning_language__":
+            if sval == "english":
+                checkbox_values["I152"] = "Yes"
+            else:
+                checkbox_values["I153"] = "6"
+                extra_text_values["I154"] = str(v).strip()
+        elif matched in CHECKBOX_SIMPLE:
+            if _truthy(v):
+                checkbox_values[matched] = "Yes"
+    return checkbox_values, extra_text_values
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PDF FIELD SCANNER
@@ -243,9 +379,9 @@ def apply_mappings(raw: dict) -> dict:
         if target == "__dob__":
             dd, dm, dy = _split_dob(str(v))
             print(f"[DOB] raw='{v}' → D='{dd}' M='{dm}' Y='{dy}'")
-            out["D"] = dd
-            out["M"] = dm
-            out["Y"] = dy
+            out["I105"] = dd
+            out["I106"] = dm
+            out["I107"] = dy
         else:
             out[target] = str(v) if v is not None else ""
     return out
@@ -331,7 +467,16 @@ def _build_multiline_ap(value: str, rect: tuple) -> bytes:
     parts += ["0 Tw", "ET", "Q"]
     return "\n".join(parts).encode()
 
-def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
+def fill_pdf(template_bytes: bytes, fv: dict, cv: dict = None) -> bytes:
+    """
+    fv — {field_name: text} for /Tx text fields.
+    cv — {field_name: export_token} for /Btn checkbox/radio fields, e.g.
+         {"I108": "1", "I143": "Yes"}. Widgets sharing a name (radio pairs
+         like I108/I138) are resolved individually below: whichever widget's
+         own /AP /N dict contains the requested token gets checked, the
+         others in that name group are set to /Off.
+    """
+    cv = cv or {}
     reader = PdfReader(io.BytesIO(template_bytes))
     writer = PdfWriter()
     writer.append(reader)
@@ -351,7 +496,33 @@ def fill_pdf(template_bytes: bytes, fv: dict) -> bytes:
                 continue
             if annot.get("/Subtype") != "/Widget":
                 continue
-            fname    = str(annot.get("/T", ""))
+            parent_obj = None
+            if annot.get("/T") is None and annot.get("/Parent") is not None:
+                parent_obj = annot["/Parent"].get_object()
+            fname = str(annot.get("/T", parent_obj.get("/T", "") if parent_obj else ""))
+            ftype = annot.get("/FT", parent_obj.get("/FT") if parent_obj else None)
+
+            # ── Checkbox / radio widgets ────────────────────────────────
+            if ftype == "/Btn" or fname in cv:
+                if fname in cv:
+                    wanted = cv[fname]
+                    ap  = annot.get("/AP")
+                    on_states = []
+                    if ap and "/N" in ap:
+                        try:
+                            on_states = [str(k) for k in ap["/N"].keys()]
+                        except Exception:
+                            on_states = []
+                    state = f"/{wanted}" if not wanted.startswith("/") else wanted
+                    chosen = state if state in on_states else "/Off"
+                    annot[NameObject("/AS")] = NameObject(chosen)
+                    annot[NameObject("/V")]  = NameObject(chosen)
+                    parent = annot.get("/Parent")
+                    if parent is not None:
+                        parent.get_object()[NameObject("/V")] = NameObject(chosen)
+                continue
+
+            # ── Text widgets (existing comb / multiline appearance logic) ─
             value    = fv.get(fname, "")
             rect     = tuple(float(v) for v in annot.get("/Rect", [0, 0, 0, 0]))
             ap_bytes = None
@@ -915,8 +1086,10 @@ async def generate(request: Request):
     try:
         template  = PDF_TEMPLATE_PATH.read_bytes()
         mapped    = apply_mappings(record_data)
+        cv, extra_text = extract_checkbox_values(record_data)
+        mapped.update(extra_text)
         fv        = build_field_values(mapped)
-        pdf_bytes = fill_pdf(template, fv)
+        pdf_bytes = fill_pdf(template, fv, cv)
         if record_id != "unknown":
             for old_job in load_jobs():
                 if old_job.get("record_id") == record_id and old_job.get("type", "twi") == "twi":
@@ -1057,6 +1230,7 @@ async def list_fields():
         "button_fields":    sorted([k for k, v in fields.items() if v["type"] == "/Btn"]),
         "comb_fields":      sorted([k for k, v in fields.items() if v["comb"]]),
         "multiline_fields": sorted([k for k, v in fields.items() if v["multiline"]]),
+        "labels":           {k: PDF_FIELD_LABELS[k] for k in fields if k in PDF_FIELD_LABELS},
         "all":              {k: v for k, v in sorted(fields.items())},
     })
 
@@ -1210,6 +1384,8 @@ async def mappings_page(auth: str = Depends(require_auth)):
         "Verifier Company Name", "Verifier Designation",
         "Verifier Professional Relation", "Verified Date",
         "SSLC Year", "Degree / Diploma Year",
+        # Added in TWI form Rev. 26 (2026-07)
+        "GSTIN Number", "Representative ID", "Booking Ref",
     ]
 
     def auto_match(zk):
@@ -1237,17 +1413,24 @@ async def mappings_page(auth: str = Depends(require_auth)):
             o += f'<option value="__dob__"{"  selected" if selected == "__dob__" else ""}>__dob__ (Date of Birth comb fields)</option>'
             for f in pdf_options:
                 sel = " selected" if f == selected else ""
-                o  += f'<option value="{f}"{sel}>{f}</option>'
+                label = PDF_FIELD_LABELS.get(f)
+                shown = f"{f} — {label}" if label else f
+                o  += f'<option value="{f}"{sel}>{shown}</option>'
             return o
 
         tag_color  = "#f59e0b" if is_override else ("#6b7280" if is_ignore else "#10b981")
         tag_label  = "manual" if is_override else ("ignored" if is_ignore else "auto")
         fuzzy_warn = " ⚠" if "fuzzy" in auto and not is_override else ""
 
+        auto_display = auto
+        _auto_bare = auto.replace(" (fuzzy)", "")
+        if _auto_bare in PDF_FIELD_LABELS:
+            auto_display = f"{auto} — {PDF_FIELD_LABELS[_auto_bare]}"
+
         rows += f"""
         <tr>
           <td style="font-weight:500">{zk}</td>
-          <td style="color:#64748b;font-size:12px">{auto}{fuzzy_warn}</td>
+          <td style="color:#64748b;font-size:12px">{auto_display}{fuzzy_warn}</td>
           <td>
             <select name="{zk}" style="width:100%;padding:4px 6px;border:1px solid #e2e8f0;
               border-radius:4px;font-size:12px;background:#fff">
